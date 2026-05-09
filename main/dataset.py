@@ -1,155 +1,71 @@
 # coding: utf-8
 """
-Data module
+Dataset module - PyTorch Dataset for sign language translation.
 """
-from torchtext import data
-from torchtext.data import Field, RawField
-from typing import List, Tuple
-import pickle
-import gzip
+import json
+import numpy as np
 import torch
+from torch.utils.data import Dataset
 
 
-def load_dataset_file(filename):
-    with gzip.open(filename, "rb") as f:
-        loaded_object = pickle.load(f)
-        return loaded_object
+class SignTranslationDataset(Dataset):
+    """Dataset that loads sign features and text tokens for translation."""
 
+    def __init__(self, file_pairs, bos_id, eos_id, fps=12.5,
+                 max_sgn_len=256, max_txt_len=128, train=False):
+        self.fps = fps
+        self.max_sgn_len = max_sgn_len
+        self.max_txt_len = max_txt_len
+        self.train = train
+        self.bos_id = bos_id
+        self.eos_id = eos_id
 
-class SignTranslationDataset(data.Dataset):
-    """Defines a dataset for machine translation."""
+        # Build sentence-level index
+        self.sentences = []
+        for npy_path, json_path in file_pairs:
+            with open(json_path, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+            for entry in entries:
+                self.sentences.append({
+                    "npy_path": npy_path,
+                    "start": entry["start"],
+                    "end": entry["end"],
+                    "tokens": entry["tokens_lower"],
+                    "text": entry["text_lower"],
+                })
 
-    @staticmethod
-    def sort_key(ex):
-        return data.interleave_keys(len(ex.sgn), len(ex.txt))
+    def __len__(self):
+        return len(self.sentences)
 
-    def __init__(
-        self,
-        path: str,
-        fields: Tuple[RawField, RawField, Field, Field, Field],
-        **kwargs
-    ):
-        """Create a SignTranslationDataset given paths and fields.
+    def __getitem__(self, idx):
+        s = self.sentences[idx]
 
-        Arguments:
-            path: Common prefix of paths to the data files for both languages.
-            exts: A tuple containing the extension to path for each language.
-            fields: A tuple containing the fields that will be used for data
-                in each language.
-            Remaining keyword arguments: Passed to the constructor of
-                data.Dataset.
-        """
-        if not isinstance(fields[0], (tuple, list)):
-            fields = [
-                ("sequence", fields[0]),
-                ("signer", fields[1]),
-                ("sgn", fields[2]),
-                ("gls", fields[3]),
-                ("txt", fields[4]),
-            ]
+        # Load features via mmap and extract the segment
+        features = np.load(s["npy_path"], mmap_mode="r")
+        start_frame = round(s["start"] * self.fps)
+        end_frame = round(s["end"] * self.fps)
+        sgn = features[start_frame:end_frame].astype(np.float32)
 
-        if not isinstance(path, list):
-            path = [path]
+        if sgn.shape[0] == 0:
+            sgn = np.zeros((1, features.shape[1]), dtype=np.float32)
 
-        samples = {}
-        for annotation_file in path:
-            tmp = load_dataset_file(annotation_file)
-            for s in tmp:
-                seq_id = s["name"]
-                if seq_id in samples:
-                    assert samples[seq_id]["name"] == s["name"]
-                    assert samples[seq_id]["signer"] == s["signer"]
-                    assert samples[seq_id]["gloss"] == s["gloss"]
-                    assert samples[seq_id]["text"] == s["text"]
-                    samples[seq_id]["sign"] = torch.cat(
-                        [samples[seq_id]["sign"], s["sign"]], axis=1
-                    )
-                else:
-                    samples[seq_id] = {
-                        "name": s["name"],
-                        "signer": s["signer"],
-                        "gloss": s["gloss"],
-                        "text": s["text"],
-                        "sign": s["sign"],
-                    }
-
-        examples = []
-        for s in samples:
-            sample = samples[s]
-            examples.append(
-                data.Example.fromlist(
-                    [
-                        sample["name"],
-                        sample["signer"],
-                        # This is for numerical stability
-                        sample["sign"] + 1e-8,
-                        sample["gloss"].strip(),
-                        sample["text"].strip(),
-                    ],
-                    fields,
+        # Subsample if longer than max_sgn_len
+        if sgn.shape[0] > self.max_sgn_len:
+            if self.train:
+                indices = np.sort(
+                    np.random.choice(sgn.shape[0], size=self.max_sgn_len, replace=False)
                 )
-            )
-        super().__init__(examples, fields, **kwargs)
+            else:
+                indices = np.linspace(0, sgn.shape[0] - 1, self.max_sgn_len, dtype=int)
+            sgn = sgn[indices]
 
-class SignTranslationDataset3D(data.Dataset):
-    """Defines a dataset for machine translation based on 3D keypoint data."""
+        # Build token sequence: [BOS] + tokens + [EOS], truncate to max_txt_len
+        tokens = [self.bos_id] + s["tokens"] + [self.eos_id]
+        if len(tokens) > self.max_txt_len:
+            tokens = tokens[: self.max_txt_len - 1] + [self.eos_id]
 
-    @staticmethod
-    def sort_key(ex):
-        return data.interleave_keys(len(ex.sgn), len(ex.txt))
+        return torch.from_numpy(sgn), torch.tensor(tokens, dtype=torch.long)
 
-    def __init__(
-        self,
-        path: str,
-        fields: Tuple[RawField, Field, Field, Field],
-        **kwargs
-    ):
-
-        if not isinstance(fields[0], (tuple, list)):
-            fields = [
-                ("name", fields[0]),   # Name of the sample
-                ("sgn", fields[1]),    # Keypoint data
-                ("gls", fields[2]),    # Gloss
-                ("txt", fields[3]),    # Text
-            ]
-
-        if not isinstance(path, list):
-            path = [path]
-
-        samples = {}
-        for annotation_file in path:
-            tmp = load_dataset_file(annotation_file)
-            for s in tmp:
-                seq_id = s["name"]
-                if seq_id in samples:
-                    assert samples[seq_id]["name"] == s["name"]
-                    assert samples[seq_id]["gloss"] == s["gloss"]
-                    assert samples[seq_id]["text"] == s["text"]
-                    # Concatenate keypoint data along the num_frames axis (0)
-                    samples[seq_id]["keypoint"] = torch.cat(
-                        [samples[seq_id]["keypoint"], s["keypoint"]], axis=0
-                    )
-                else:
-                    samples[seq_id] = {
-                        "name": s["name"],
-                        "gloss": s["gloss"],
-                        "text": s["text"],
-                        "keypoint": s["keypoint"],  # Store 3D keypoint data
-                    }
-
-        examples = []
-        for s in samples:
-            sample = samples[s]
-            examples.append(
-                data.Example.fromlist(
-                    [
-                        sample["name"],
-                        # Adding small value for numerical stability
-                        sample["keypoint"] + 1e-8,  # Keypoint data (num_frames, 133, 3)
-                        sample["gloss"].strip(),
-                        sample["text"].strip(),
-                    ],
-                    fields,
-                )
-            )
-        super().__init__(examples, fields, **kwargs)
+    @property
+    def txt_references(self):
+        return [s["text"] for s in self.sentences]

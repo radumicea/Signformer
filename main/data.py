@@ -1,248 +1,107 @@
 # coding: utf-8
 """
-Data module
+Data module - loads and splits dataset, creates data loaders.
 """
+import glob
 import os
-import sys
-import random
+from functools import partial
 
+import numpy as np
 import torch
-from torchtext import data
-from torchtext.data import Dataset, Iterator
-import socket
+from torch.utils.data import DataLoader
+
 from main.dataset import SignTranslationDataset
-from main.vocabulary import (
-    build_vocab,
-    Vocabulary,
-    UNK_TOKEN,
-    EOS_TOKEN,
-    BOS_TOKEN,
-    PAD_TOKEN,
-)
+from main.vocabulary import Vocabulary, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN
 
 
-def load_data(data_cfg: dict) -> (Dataset, Dataset, Dataset, Vocabulary, Vocabulary):
+def _find_file_pairs(data_path):
+    """Find all matching .seg.npy / .seg.json file pairs recursively."""
+    json_files = sorted(
+        glob.glob(os.path.join(data_path, "**", "*.seg.json"), recursive=True)
+    )
+    pairs = []
+    for json_path in json_files:
+        npy_path = json_path.replace(".seg.json", ".seg.npy")
+        if os.path.exists(npy_path):
+            pairs.append((npy_path, json_path))
+    return pairs
+
+
+def load_data(data_cfg: dict):
     """
-    Load train, dev and optionally test data as specified in configuration.
-    Vocabularies are created from the training set with a limit of `voc_limit`
-    tokens and a minimum token frequency of `voc_min_freq`
-    (specified in the configuration dictionary).
+    Load vocabulary and create train/dev/test datasets.
 
-    The training data is filtered to include sentences up to `max_sent_length`
-    on source and target side.
-
-    If you set ``random_train_subset``, a random selection of this size is used
-    from the training set instead of the full training set.
-
-    If you set ``random_dev_subset``, a random selection of this size is used
-    from the dev development instead of the full development set.
-
-    :param data_cfg: configuration dictionary for data
-        ("data" part of configuration file)
-    :return:
-        - train_data: training dataset
-        - dev_data: development dataset
-        - test_data: test dataset if given, otherwise None
-        - gls_vocab: gloss vocabulary extracted from training data
-        - txt_vocab: spoken text vocabulary extracted from training data
+    File pairs are discovered, shuffled with a seed, and split 90/5/5.
     """
+    data_path = data_cfg["data_path"]
+    vocab_file = data_cfg["vocab_file"]
+    fps = data_cfg.get("fps", 12.5)
+    max_sgn_len = data_cfg.get("max_sgn_len", 256)
+    max_txt_len = data_cfg.get("max_txt_len", 128)
+    split_seed = data_cfg.get("split_seed", 42)
 
-    data_path = data_cfg.get("data_path", "./data")
+    vocab = Vocabulary(file=vocab_file)
+    bos_id = vocab.stoi[BOS_TOKEN]
+    eos_id = vocab.stoi[EOS_TOKEN]
 
-    if isinstance(data_cfg["train"], list):
-        train_paths = [os.path.join(data_path, x) for x in data_cfg["train"]]
-        dev_paths = [os.path.join(data_path, x) for x in data_cfg["dev"]]
-        test_paths = [os.path.join(data_path, x) for x in data_cfg["test"]]
-        pad_feature_size = sum(data_cfg["feature_size"])
+    # Find all file pairs
+    pairs = _find_file_pairs(data_path)
+    assert len(pairs) > 0, f"No file pairs found in {data_path}"
 
-    else:
-        train_paths = os.path.join(data_path, data_cfg["train"])
-        dev_paths = os.path.join(data_path, data_cfg["dev"])
-        test_paths = os.path.join(data_path, data_cfg["test"])
-        pad_feature_size = data_cfg["feature_size"]
+    # Shuffle and split 90/5/5
+    rng = np.random.default_rng(split_seed)
+    indices = rng.permutation(len(pairs))
+    n = len(pairs)
+    n_train = int(n * 0.9)
+    n_dev = int(n * 0.05)
 
-    level = data_cfg["level"]
-    txt_lowercase = data_cfg["txt_lowercase"]
-    max_sent_length = data_cfg["max_sent_length"]
-
-    def tokenize_text(text):
-        if level == "char":
-            return list(text)
-        else:
-            return text.split()
-
-    def tokenize_features(features):
-        ft_list = torch.split(features, 1, dim=0)
-        return [ft.squeeze() for ft in ft_list]
-
-    # NOTE (Cihan): The something was necessary to match the function signature.
-
-    def stack_features(features, something):
-        return torch.stack([torch.stack(ft, dim=0) for ft in features], dim=0)
-
-    sequence_field = data.RawField()
-    signer_field = data.RawField()
-
-    sgn_field = data.Field(
-        use_vocab=False,
-        init_token=None,
-        dtype=torch.float32,
-        preprocessing=tokenize_features,
-        tokenize=lambda features: features,  # TODO (Cihan): is this necessary?
-        batch_first=True,
-        include_lengths=True,
-        postprocessing=stack_features,
-        pad_token=torch.zeros((pad_feature_size,)),
-    )
-
-    gls_field = data.Field(
-        pad_token=PAD_TOKEN,
-        tokenize=tokenize_text,
-        batch_first=True,
-        lower=False,
-        include_lengths=True,
-    )
-
-    txt_field = data.Field(
-        init_token=BOS_TOKEN,
-        eos_token=EOS_TOKEN,
-        pad_token=PAD_TOKEN,
-        tokenize=tokenize_text,
-        unk_token=UNK_TOKEN,
-        batch_first=True,
-        lower=txt_lowercase,
-        include_lengths=True,
-    )
+    train_pairs = [pairs[i] for i in indices[:n_train]]
+    dev_pairs = [pairs[i] for i in indices[n_train : n_train + n_dev]]
+    test_pairs = [pairs[i] for i in indices[n_train + n_dev :]]
 
     train_data = SignTranslationDataset(
-        path=train_paths,
-        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
-        filter_pred=lambda x: len(vars(x)["sgn"]) <= max_sent_length
-        and len(vars(x)["txt"]) <= max_sent_length,
+        train_pairs, bos_id, eos_id, fps, max_sgn_len, max_txt_len, train=True
     )
-
-    gls_max_size = data_cfg.get("gls_voc_limit", sys.maxsize)
-    gls_min_freq = data_cfg.get("gls_voc_min_freq", 1)
-    txt_max_size = data_cfg.get("txt_voc_limit", sys.maxsize)
-    txt_min_freq = data_cfg.get("txt_voc_min_freq", 1)
-
-    gls_vocab_file = data_cfg.get("gls_vocab", None)
-    txt_vocab_file = data_cfg.get("txt_vocab", None)
-
-    gls_vocab = build_vocab(
-        field="gls",
-        min_freq=gls_min_freq,
-        max_size=gls_max_size,
-        dataset=train_data,
-        vocab_file=gls_vocab_file,
-    )
-    txt_vocab = build_vocab(
-        field="txt",
-        min_freq=txt_min_freq,
-        max_size=txt_max_size,
-        dataset=train_data,
-        vocab_file=txt_vocab_file,
-    )
-    random_train_subset = data_cfg.get("random_train_subset", -1)
-    if random_train_subset > -1:
-        # select this many training examples randomly and discard the rest
-        keep_ratio = random_train_subset / len(train_data)
-        keep, _ = train_data.split(
-            split_ratio=[keep_ratio, 1 - keep_ratio], random_state=random.getstate()
-        )
-        train_data = keep
-
     dev_data = SignTranslationDataset(
-        path=dev_paths,
-        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
+        dev_pairs, bos_id, eos_id, fps, max_sgn_len, max_txt_len, train=False
     )
-    random_dev_subset = data_cfg.get("random_dev_subset", -1)
-    if random_dev_subset > -1:
-        # select this many development examples randomly and discard the rest
-        keep_ratio = random_dev_subset / len(dev_data)
-        keep, _ = dev_data.split(
-            split_ratio=[keep_ratio, 1 - keep_ratio], random_state=random.getstate()
-        )
-        dev_data = keep
-
-    # check if target exists
     test_data = SignTranslationDataset(
-        path=test_paths,
-        fields=(sequence_field, signer_field, sgn_field, gls_field, txt_field),
+        test_pairs, bos_id, eos_id, fps, max_sgn_len, max_txt_len, train=False
     )
 
-    gls_field.vocab = gls_vocab
-    txt_field.vocab = txt_vocab
-    return train_data, dev_data, test_data, gls_vocab, txt_vocab
+    return train_data, dev_data, test_data, vocab
 
 
-# TODO (Cihan): I don't like this use of globals.
-#  Need to find a more elegant solution for this it at some point.
-# pylint: disable=global-at-module-level
-global max_sgn_in_batch, max_gls_in_batch, max_txt_in_batch
+def _collate_fn(samples, pad_id, sgn_dim):
+    """Collate function for DataLoader - pads sgn and txt to batch max."""
+    sgn_list, txt_list = zip(*samples)
+
+    sgn_lengths = torch.tensor([s.shape[0] for s in sgn_list])
+    txt_lengths = torch.tensor([t.shape[0] for t in txt_list])
+
+    max_sgn = sgn_lengths.max().item()
+    max_txt = txt_lengths.max().item()
+    batch_size = len(samples)
+
+    sgn = torch.zeros(batch_size, max_sgn, sgn_dim)
+    txt = torch.full((batch_size, max_txt), pad_id, dtype=torch.long)
+
+    for i, (s, t) in enumerate(zip(sgn_list, txt_list)):
+        sgn[i, : s.shape[0]] = s
+        txt[i, : t.shape[0]] = t
+
+    return sgn, sgn_lengths, txt, txt_lengths
 
 
-# pylint: disable=unused-argument,global-variable-undefined
-def token_batch_size_fn(new, count, sofar):
-    """Compute batch size based on number of tokens (+padding)"""
-    global max_sgn_in_batch, max_gls_in_batch, max_txt_in_batch
-    if count == 1:
-        max_sgn_in_batch = 0
-        max_gls_in_batch = 0
-        max_txt_in_batch = 0
-    max_sgn_in_batch = max(max_sgn_in_batch, len(new.sgn))
-    max_gls_in_batch = max(max_gls_in_batch, len(new.gls))
-    max_txt_in_batch = max(max_txt_in_batch, len(new.txt) + 2)
-    sgn_elements = count * max_sgn_in_batch
-    gls_elements = count * max_gls_in_batch
-    txt_elements = count * max_txt_in_batch
-    return max(sgn_elements, gls_elements, txt_elements)
-
-
-def make_data_iter(
-    dataset: Dataset,
-    batch_size: int,
-    batch_type: str = "sentence",
-    train: bool = False,
-    shuffle: bool = False,
-) -> Iterator:
-    """
-    Returns a torchtext iterator for a torchtext dataset.
-
-    :param dataset: torchtext dataset containing sgn and optionally txt
-    :param batch_size: size of the batches the iterator prepares
-    :param batch_type: measure batch size by sentence count or by token count
-    :param train: whether it's training time, when turned off,
-        bucketing, sorting within batches and shuffling is disabled
-    :param shuffle: whether to shuffle the data before each epoch
-        (no effect if set to True for testing)
-    :return: torchtext iterator
-    """
-
-    batch_size_fn = token_batch_size_fn if batch_type == "token" else None
-
-    if train:
-        # optionally shuffle and sort during training
-        data_iter = data.BucketIterator(
-            repeat=False,
-            sort=False,
-            dataset=dataset,
-            batch_size=batch_size,
-            batch_size_fn=batch_size_fn,
-            train=True,
-            sort_within_batch=True,
-            sort_key=lambda x: len(x.sgn),
-            shuffle=shuffle,
-        )
-    else:
-        # don't sort/shuffle for validation/inference
-        data_iter = data.BucketIterator(
-            repeat=False,
-            dataset=dataset,
-            batch_size=batch_size,
-            batch_size_fn=batch_size_fn,
-            train=False,
-            sort=False,
-        )
-
-    return data_iter
+def make_data_iter(dataset, batch_size, pad_id, sgn_dim, train=False, shuffle=False):
+    """Create a DataLoader for the dataset."""
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle and train,
+        collate_fn=partial(_collate_fn, pad_id=pad_id, sgn_dim=sgn_dim),
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        drop_last=False,
+    )

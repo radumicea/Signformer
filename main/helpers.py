@@ -18,9 +18,8 @@ import numpy as np
 
 import torch
 from torch import nn, Tensor
-from torchtext.data import Dataset
 import yaml
-from main.vocabulary import GlossVocabulary, TextVocabulary
+from main.vocabulary import Vocabulary
 
 
 def make_model_dir(model_dir: str, overwrite: bool = False) -> str:
@@ -117,23 +116,12 @@ def set_seed(seed: int):
 
 
 def log_data_info(
-    train_data: Dataset,
-    valid_data: Dataset,
-    test_data: Dataset,
-    gls_vocab: GlossVocabulary,
-    txt_vocab: TextVocabulary,
+    train_data,
+    valid_data,
+    test_data,
+    txt_vocab: Vocabulary,
     logging_function: Callable[[str], None],
 ):
-    """
-    Log statistics of data and vocabulary.
-
-    :param train_data:
-    :param valid_data:
-    :param test_data:
-    :param gls_vocab:
-    :param txt_vocab:
-    :param logging_function:
-    """
     logging_function(
         "Data set sizes: \n\ttrain {:d},\n\tvalid {:d},\n\ttest {:d}".format(
             len(train_data),
@@ -141,26 +129,7 @@ def log_data_info(
             len(test_data) if test_data is not None else 0,
         )
     )
-
-    logging_function(
-        "First training example:\n\t[GLS] {}\n\t[TXT] {}".format(
-            " ".join(vars(train_data[0])["gls"]), " ".join(vars(train_data[0])["txt"])
-        )
-    )
-
-    logging_function(
-        "First 10 words (gls): {}".format(
-            " ".join("(%d) %s" % (i, t) for i, t in enumerate(gls_vocab.itos[:10]))
-        )
-    )
-    logging_function(
-        "First 10 words (txt): {}".format(
-            " ".join("(%d) %s" % (i, t) for i, t in enumerate(txt_vocab.itos[:10]))
-        )
-    )
-
-    logging_function("Number of unique glosses (types): {}".format(len(gls_vocab)))
-    logging_function("Number of unique words (types): {}".format(len(txt_vocab)))
+    logging_function("Vocabulary size: {}".format(len(txt_vocab)))
 
 
 def load_config(path="configs/default.yaml") -> dict:
@@ -173,16 +142,6 @@ def load_config(path="configs/default.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as ymlfile:
         cfg = yaml.safe_load(ymlfile)
     return cfg
-
-
-def bpe_postprocess(string) -> str:
-    """
-    Post-processor for BPE output. Recombines BPE-split tokens.
-
-    :param string:
-    :return: post-processed string
-    """
-    return string.replace("@@ ", "")
 
 
 def get_latest_checkpoint(ckpt_dir: str) -> Optional[str]:

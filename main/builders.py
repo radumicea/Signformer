@@ -12,7 +12,6 @@ from torch.optim import lr_scheduler
 
 # Optimization Algorithms
 from torch.optim import Optimizer
-from sophia import SophiaG
 
 
 def build_gradient_clipper(config: dict) -> Optional[Callable]:
@@ -132,8 +131,6 @@ def build_optimizer(config: dict, parameters) -> Optimizer:
             momentum=config.get("momentum", 0),
             weight_decay=weight_decay,
         )
-    elif optimizer_name == "sophiag":
-        return SophiaG(parameters, lr=learning_rate, betas=betas, rho=0.01, weight_decay=weight_decay)
     else:
         raise ValueError("Unknown optimizer {}.".format(optimizer_name))
 
@@ -173,7 +170,6 @@ def build_scheduler(
             lr_scheduler.ReduceLROnPlateau(
                 optimizer=optimizer,
                 mode=scheduler_mode,
-                verbose=False,
                 threshold_mode="abs",
                 factor=config.get("decrease_factor", 0.1),
                 patience=config.get("patience", 10),

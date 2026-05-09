@@ -170,7 +170,6 @@ class SpatialEmbeddings(nn.Module):
 
     """
     Simple Linear Projection Layer
-    (For encoder outputs to predict glosses)
     """
 
     # pylint: disable=unused-argument
