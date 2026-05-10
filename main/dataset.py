@@ -42,8 +42,17 @@ class SignTranslationDataset(Dataset):
 
         # Load features via mmap and extract the segment
         features = np.load(s["npy_path"], mmap_mode="r")
-        start_frame = round(s["start"] * self.fps)
-        end_frame = round(s["end"] * self.fps)
+        total_frames = features.shape[0]
+
+        if self.train:
+            skip_start = np.random.uniform(0.0, 1.5)
+            extra_end = np.random.uniform(2.0, 4.0)
+        else:
+            skip_start = 0.0
+            extra_end = 3.0
+
+        start_frame = min(round((s["start"] + skip_start) * self.fps), total_frames)
+        end_frame = min(round((s["end"] + extra_end) * self.fps), total_frames)
         sgn = features[start_frame:end_frame].astype(np.float32)
 
         if sgn.shape[0] == 0:

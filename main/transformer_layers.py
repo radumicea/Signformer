@@ -120,7 +120,7 @@ class PositionwiseFeedForward(nn.Module):
 
     def forward(self, x):
         x_norm = self.layer_norm(x)
-        return self.pwff_layer(x_norm) + x
+        return self.pwff_layer(x_norm)
 
 
 # pylint: disable=arguments-differ
@@ -244,9 +244,6 @@ class TransformerDecoderLayer(nn.Module):
         self.dec_layer_norm = nn.LayerNorm(size, eps=1e-6)
         self.dropout = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-
-        self.output_norm = nn.LayerNorm(size)
 
     # pylint: disable=arguments-differ
     def forward(
@@ -276,6 +273,6 @@ class TransformerDecoderLayer(nn.Module):
         x = self.dropout2(h2) + h1
 
         # final position-wise feed-forward layer
-        x_2 = self.output_norm(x)
-        x = x + self.dropout3(self.feed_forward(x_2))
+        # Pre-norm residual: x + FFN(LayerNorm(x))
+        x = x + self.feed_forward(x)
         return x
