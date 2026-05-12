@@ -295,9 +295,12 @@ class TrainManager:
             processed_txt_tokens = self.total_txt_tokens
             epoch_translation_loss = 0
 
-            for sgn, sgn_lengths, txt, txt_lengths in train_iter:
+            train_data.set_epoch(epoch_no)
+            for batch_dict in train_iter:
+                if batch_dict is None:
+                    continue
                 batch = Batch(
-                    sgn, sgn_lengths, txt, txt_lengths,
+                    torch_batch=batch_dict,
                     txt_pad_index=self.txt_pad_index,
                     sgn_dim=self.feature_size,
                     use_cuda=self.use_cuda,

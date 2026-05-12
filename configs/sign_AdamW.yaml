@@ -7,6 +7,8 @@ data:
     max_sgn_len: 256
     max_txt_len: 128
     split_seed: 42
+    context_prob: 0.5
+    context_gap_max: 5.0
     multimodal: 0.0
 testing:
     translation_beam_sizes:
@@ -67,6 +69,7 @@ model:
     embed_init_gain: 1.0
     tied_softmax: true
     cope: false
+    context_num_queries: 8
     encoder:
         type: transformer
         num_layers: 1

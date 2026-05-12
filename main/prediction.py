@@ -53,9 +53,11 @@ def validate_on_data(
         total_num_txt_tokens = 0
         total_num_seqs = 0
 
-        for sgn, sgn_lengths, txt, txt_lengths in valid_iter:
+        for batch_dict in valid_iter:
+            if batch_dict is None:
+                continue
             batch = Batch(
-                sgn, sgn_lengths, txt, txt_lengths,
+                torch_batch=batch_dict,
                 txt_pad_index=txt_pad_index,
                 sgn_dim=sgn_dim,
                 use_cuda=use_cuda,
