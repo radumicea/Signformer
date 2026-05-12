@@ -7,7 +7,7 @@ class ResidualConnectionModule(nn.Module):
         super(ResidualConnectionModule, self).__init__()
         self.module = module
         self.module_factor = module_factor
-        self.input_factor = module_factor
+        self.input_factor = 1.0
 
     def forward(self, inputs: Tensor, mask: Tensor = None) -> Tensor:
         if isinstance(self.module, MultiHeadedSelfAttentionModule) or isinstance(self.module, RelativeMultiheadSelfAttentionModule) or isinstance(self.module, GlossFreeAttentionModule) or isinstance(self.module, ContextualMultiHeadedSelfAttentionModule):

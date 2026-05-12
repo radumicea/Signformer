@@ -250,7 +250,10 @@ class TrainManager:
 
         # restore rng states for exact resumption
         if "torch_rng_state" in model_checkpoint:
-            torch.random.set_rng_state(model_checkpoint["torch_rng_state"])
+            rng_state = model_checkpoint["torch_rng_state"]
+            if isinstance(rng_state, torch.Tensor):
+                rng_state = rng_state.cpu()
+            torch.random.set_rng_state(rng_state)
         if "numpy_rng_state" in model_checkpoint:
             np.random.set_state(model_checkpoint["numpy_rng_state"])
         if "python_rng_state" in model_checkpoint:
@@ -259,7 +262,10 @@ class TrainManager:
             "cuda_rng_state" in model_checkpoint
             and model_checkpoint["cuda_rng_state"] is not None
         ):
-            torch.cuda.set_rng_state(model_checkpoint["cuda_rng_state"])
+            cuda_rng = model_checkpoint["cuda_rng_state"]
+            if isinstance(cuda_rng, torch.Tensor):
+                cuda_rng = cuda_rng.cpu()
+            torch.cuda.set_rng_state(cuda_rng)
 
         # move parameters to cuda
         if self.use_cuda:
