@@ -15,13 +15,13 @@ from main.vocabulary import Vocabulary, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN
 
 
 def _find_file_pairs(data_path):
-    """Find all matching .seg.npy / .seg.json file pairs recursively."""
+    """Find all matching .npy / .json file pairs recursively."""
     json_files = sorted(
-        glob.glob(os.path.join(data_path, "**", "*.seg.json"), recursive=True)
+        glob.glob(os.path.join(data_path, "**", "*.json"), recursive=True)
     )
     pairs = []
     for json_path in json_files:
-        npy_path = json_path.replace(".seg.json", ".seg.npy")
+        npy_path = json_path.replace(".json", ".npy")
         if os.path.exists(npy_path):
             pairs.append((npy_path, json_path))
     return pairs
