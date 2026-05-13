@@ -168,14 +168,24 @@ class SignTranslationDataset(Dataset):
         start_frame = max(0, min(N, start_frame))
 
         if end_frame <= start_frame:
-            return None
-
-        # Copy slice as float32
-        sgn = X_ref[start_frame:end_frame].astype(np.float32)
+            if N > 0:
+                safe_start = max(0, min(N - 1, start_frame))
+                sgn = X_ref[safe_start:safe_start + 1].astype(np.float32)
+                start_frame = safe_start
+                end_frame = safe_start + 1
+            else:
+                feat_dim = X_ref.shape[1] if X_ref.ndim == 2 and X_ref.shape[1] > 0 else 1
+                sgn = np.zeros((1, feat_dim), dtype=np.float32)
+                start_frame = 0
+                end_frame = 1
+                ann_end_frame = 0
+        else:
+            # Copy slice as float32
+            sgn = X_ref[start_frame:end_frame].astype(np.float32)
 
         # --- Confidence ramp ---
         ann_end_local = ann_end_frame - start_frame
-        post_ext_len = end_frame - ann_end_frame
+        post_ext_len = max(0, end_frame - ann_end_frame)
 
         # Boundary ramp parameters: shared between current sentence's start
         # fade-in and context's end fade-out (same uncertainty, mirrored).
