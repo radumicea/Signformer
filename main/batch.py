@@ -7,10 +7,11 @@ class Batch:
     """Object for holding a batch of data with masks during training."""
 
     def __init__(self, sgn, sgn_lengths, txt, txt_lengths,
-                 txt_pad_index, sgn_dim, use_cuda=False):
+                 txt_pad_index, sgn_dim, phonemes, use_cuda=False):
         self.sgn = sgn
         self.sgn_lengths = sgn_lengths
         self.sgn_dim = sgn_dim
+        self.phonemes = phonemes  # (B, T, phoneme_dim) — CTC logits per frame
         self.num_seqs = sgn.size(0)
 
         # Length-based mask: True where valid (not padding)
@@ -37,6 +38,7 @@ class Batch:
         self.txt = self.txt.cuda()
         self.txt_mask = self.txt_mask.cuda()
         self.txt_input = self.txt_input.cuda()
+        self.phonemes = self.phonemes.cuda()
 
     def sort_by_sgn_lengths(self):
         """Sort by sgn length (descending) and return index to revert sort."""
@@ -48,6 +50,7 @@ class Batch:
         self.sgn = self.sgn[perm_index]
         self.sgn_mask = self.sgn_mask[perm_index]
         self.sgn_lengths = self.sgn_lengths[perm_index]
+        self.phonemes = self.phonemes[perm_index]
 
         self.txt = self.txt[perm_index]
         self.txt_mask = self.txt_mask[perm_index]

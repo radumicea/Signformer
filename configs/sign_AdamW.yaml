@@ -3,6 +3,7 @@ data:
     data_path: /home/radumicea/Projects/University/LinguSign/new_feb_stuff/dataset
     vocab_file: /home/radumicea/Projects/University/LinguSign/new_feb_stuff/dataset/spm_unigram_lowercase_16k.vocab
     feature_size: 1024
+    phoneme_dim: 38
     fps: 12.5
     max_sgn_len: 256
     max_txt_len: 128

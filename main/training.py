@@ -55,6 +55,7 @@ class TrainManager:
             if isinstance(config["data"]["feature_size"], list)
             else config["data"]["feature_size"]
         )
+        self.phoneme_dim = config["data"]["phoneme_dim"]
 
         # model
         self.model = model
@@ -277,6 +278,7 @@ class TrainManager:
             batch_size=self.batch_size,
             pad_id=self.txt_pad_index,
             sgn_dim=self.feature_size,
+            phoneme_dim=self.phoneme_dim,
             train=True,
             shuffle=self.shuffle,
         )
@@ -295,9 +297,10 @@ class TrainManager:
             processed_txt_tokens = self.total_txt_tokens
             epoch_translation_loss = 0
 
-            for sgn, sgn_lengths, txt, txt_lengths in train_iter:
+            for sgn, sgn_lengths, txt, txt_lengths, phonemes in train_iter:
                 batch = Batch(
                     sgn, sgn_lengths, txt, txt_lengths,
+                    phonemes=phonemes,
                     txt_pad_index=self.txt_pad_index,
                     sgn_dim=self.feature_size,
                     use_cuda=self.use_cuda,
@@ -358,6 +361,7 @@ class TrainManager:
                 batch_size=self.eval_batch_size,
                 use_cuda=self.use_cuda,
                 sgn_dim=self.feature_size,
+                phoneme_dim=self.phoneme_dim,
                 txt_pad_index=self.txt_pad_index,
                 translation_loss_function=self.translation_loss_function,
                 translation_max_output_length=self.translation_max_output_length,
@@ -633,6 +637,7 @@ def train(cfg_file: str) -> None:
         sgn_dim=sum(cfg["data"]["feature_size"])
         if isinstance(cfg["data"]["feature_size"], list)
         else cfg["data"]["feature_size"],
+        phoneme_dim=cfg["data"]["phoneme_dim"],
         multimodal=multimodal,
     )
 

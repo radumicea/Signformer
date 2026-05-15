@@ -7,6 +7,7 @@ from main.initialization import initialize_model
 from main.embeddings import Embeddings, SpatialEmbeddings
 from main.encoders import Encoder, RecurrentEncoder, TransformerEncoder
 from main.decoders import Decoder, RecurrentDecoder, TransformerDecoder
+from main.fusion import PhonemeSignFusion
 from main.search import beam_search, greedy
 from main.vocabulary import (
     Vocabulary,
@@ -27,6 +28,7 @@ class SignModel(nn.Module):
         self,
         encoder: Encoder,
         decoder: Decoder,
+        fusion: PhonemeSignFusion,
         sgn_embed: SpatialEmbeddings,
         txt_embed: Embeddings,
         txt_vocab: Vocabulary,
@@ -35,6 +37,7 @@ class SignModel(nn.Module):
 
         self.encoder = encoder
         self.decoder = decoder
+        self.fusion = fusion
 
         self.sgn_embed = sgn_embed
         self.txt_embed = txt_embed
@@ -51,10 +54,11 @@ class SignModel(nn.Module):
         sgn_mask: Tensor,
         sgn_lengths: Tensor,
         txt_input: Tensor,
-        txt_mask: Tensor = None,
+        txt_mask: Tensor,
+        phonemes: Tensor,
     ):
         encoder_output, encoder_hidden = self.encode(
-            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths
+            sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths, phonemes=phonemes
         )
         unroll_steps = txt_input.size(1)
         decoder_outputs = self.decode(
@@ -68,7 +72,7 @@ class SignModel(nn.Module):
         return decoder_outputs
 
     def encode(
-        self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor
+        self, sgn: Tensor, sgn_mask: Tensor, sgn_length: Tensor, phonemes: Tensor,
     ) -> (Tensor, Tensor):
         """
         Encodes the source sentence.
@@ -76,10 +80,13 @@ class SignModel(nn.Module):
         :param sgn:
         :param sgn_mask:
         :param sgn_length:
+        :param phonemes: per-frame CTC logits (B, T, num_phonemes)
         :return: encoder outputs (output, hidden_concat)
         """
+        x = self.sgn_embed(x=sgn, mask=sgn_mask)
+        x = self.fusion(sgn=x, phonemes=phonemes)
         return self.encoder(
-            embed_src=self.sgn_embed(x=sgn, mask=sgn_mask),
+            embed_src=x,
             src_length=sgn_length,
             mask=sgn_mask,
         )
@@ -128,6 +135,7 @@ class SignModel(nn.Module):
             sgn_lengths=batch.sgn_lengths,
             txt_input=batch.txt_input,
             txt_mask=batch.txt_mask,
+            phonemes=batch.phonemes,
         )
         word_outputs, _, _, _ = decoder_outputs
         txt_log_probs = F.log_softmax(word_outputs, dim=-1)
@@ -145,7 +153,7 @@ class SignModel(nn.Module):
         translation_max_output_length: int = 100,
     ) -> (np.array, np.array):
         encoder_output, encoder_hidden = self.encode(
-            sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
+            sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths, phonemes=batch.phonemes,
         )
 
         if translation_beam_size < 2:
@@ -179,12 +187,14 @@ class SignModel(nn.Module):
     def __repr__(self) -> str:
         return (
             "%s(\n"
+            "\tfusion=%s,\n"
             "\tencoder=%s,\n"
             "\tdecoder=%s,\n"
             "\tsgn_embed=%s,\n"
             "\ttxt_embed=%s)"
             % (
                 self.__class__.__name__,
+                self.fusion,
                 self.encoder,
                 self.decoder,
                 self.sgn_embed,
@@ -196,6 +206,7 @@ class SignModel(nn.Module):
 def build_model(
     cfg: dict,
     sgn_dim: int,
+    phoneme_dim: int,
     txt_vocab: Vocabulary,
     multimodal: bool = False,
 ) -> SignModel:
@@ -205,7 +216,12 @@ def build_model(
         **cfg["encoder"]["embeddings"],
         num_heads=cfg["encoder"]["num_heads"],
         input_size=sgn_dim,
-        multimodal=multimodal
+        multimodal=multimodal,
+    )
+
+    fusion = PhonemeSignFusion(
+        embedding_dim=cfg["encoder"]["embeddings"]["embedding_dim"],
+        phoneme_dim=phoneme_dim,
     )
 
     # build encoder
@@ -258,6 +274,7 @@ def build_model(
         )
 
     model: SignModel = SignModel(
+        fusion=fusion,
         encoder=encoder,
         decoder=decoder,
         sgn_embed=sgn_embed,

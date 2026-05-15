@@ -29,6 +29,7 @@ def validate_on_data(
     batch_size: int,
     use_cuda: bool,
     sgn_dim: int,
+    phoneme_dim: int,
     translation_loss_function,
     translation_loss_weight: float,
     translation_max_output_length: int,
@@ -41,6 +42,7 @@ def validate_on_data(
         batch_size=batch_size,
         pad_id=txt_pad_index,
         sgn_dim=sgn_dim,
+        phoneme_dim=phoneme_dim,
         train=False,
         shuffle=False,
     )
@@ -53,9 +55,10 @@ def validate_on_data(
         total_num_txt_tokens = 0
         total_num_seqs = 0
 
-        for sgn, sgn_lengths, txt, txt_lengths in valid_iter:
+        for sgn, sgn_lengths, txt, txt_lengths, phonemes in valid_iter:
             batch = Batch(
                 sgn, sgn_lengths, txt, txt_lengths,
+                phonemes=phonemes,
                 txt_pad_index=txt_pad_index,
                 sgn_dim=sgn_dim,
                 use_cuda=use_cuda,
@@ -159,6 +162,7 @@ def test(
     model_checkpoint = load_checkpoint(ckpt, use_cuda=use_cuda)
 
     multimodal = cfg["data"].get("multimodal", False)
+    phoneme_dim = cfg["data"]["phoneme_dim"]
     sgn_dim = (
         sum(cfg["data"]["feature_size"])
         if isinstance(cfg["data"]["feature_size"], list)
@@ -168,6 +172,7 @@ def test(
         cfg=cfg["model"],
         txt_vocab=txt_vocab,
         sgn_dim=sgn_dim,
+        phoneme_dim=phoneme_dim,
         multimodal=multimodal,
     )
     model.load_state_dict(model_checkpoint["model_state"])
@@ -202,6 +207,7 @@ def test(
                 batch_size=batch_size,
                 use_cuda=use_cuda,
                 sgn_dim=sgn_dim,
+                phoneme_dim=phoneme_dim,
                 translation_loss_function=translation_loss_function,
                 translation_loss_weight=1,
                 translation_max_output_length=translation_max_output_length,
@@ -246,6 +252,7 @@ def test(
         batch_size=batch_size,
         use_cuda=use_cuda,
         sgn_dim=sgn_dim,
+        phoneme_dim=phoneme_dim,
         txt_pad_index=txt_vocab.stoi[PAD_TOKEN],
         translation_loss_function=translation_loss_function,
         translation_loss_weight=1,
