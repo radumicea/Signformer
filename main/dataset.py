@@ -15,8 +15,8 @@ from torch.utils.data import Dataset
 FEATURE_FPS = 12.5  # 25 fps / stride 2
 
 # Post-delay: extend past annotated end (no pre-extension)
-POST_DELAY_RANGE = (2.0, 5.0)  # train: uniform in seconds
-FIXED_POST_DELAY = 3.5         # eval: fixed seconds
+POST_DELAY_RANGE = (1.0, 5.0)  # train: uniform in seconds
+FIXED_POST_DELAY = 4.0         # eval: fixed seconds
 
 # Context gap: max gap (sec) to previous sentence for providing context
 CONTEXT_GAP_MAX = 5.0
@@ -258,6 +258,8 @@ class SignTranslationDataset(Dataset):
                             ctx_X = ctx_X[ctx_idx]
                         prev_sgn = ctx_X
 
+        del X_ref
+        
         return {
             "sgn": sgn,
             "txt": tokens,
