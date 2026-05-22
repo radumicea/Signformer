@@ -91,7 +91,24 @@ class TrainManager:
         self.learning_rate_min = train_config.get("learning_rate_min", 1.0e-8)
         self.clip_grad_fun = build_gradient_clipper(config=train_config)
 
-        params = model.parameters()
+        # Use a lower lr for the fusion gate to prevent catastrophic flipping
+        fusion_params = []
+        other_params = []
+        for name, param in model.named_parameters():
+            if "fusion" in name:
+                fusion_params.append(param)
+            else:
+                other_params.append(param)
+
+        if fusion_params:
+            lr = train_config.get("learning_rate", 3.0e-4)
+            params = [
+                {"params": other_params},
+                {"params": fusion_params, "lr": lr * 0.1},
+            ]
+        else:
+            params = model.parameters()
+
         self.optimizer = build_optimizer(
             config=train_config, parameters=params
         )

@@ -30,6 +30,8 @@ class PhonemeSignFusion(nn.Module):
         self.phoneme_proj = nn.Linear(phoneme_dim, embedding_dim)
         self.phoneme_norm = nn.LayerNorm(embedding_dim)
         self.gate = nn.Linear(embedding_dim, embedding_dim)
+        # Bias toward sign stream so the gate doesn't flip catastrophically
+        nn.init.constant_(self.gate.bias, 2.0)
 
     def forward(self, sgn: Tensor, phonemes: Tensor) -> Tensor:
         """

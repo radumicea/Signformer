@@ -47,11 +47,11 @@ class SignTranslationDataset(Dataset):
         total_frames = features.shape[0]
 
         if self.train:
-            skip_start = np.random.uniform(0.0, 1.5)
-            extra_end = np.random.uniform(2.0, 4.0)
+            skip_start = 0.0
+            extra_end = 5.0
         else:
             skip_start = 0.0
-            extra_end = 3.0
+            extra_end = 4.0
 
         start_frame = min(round((s["start"] + skip_start) * self.fps), total_frames)
         end_frame = min(round((s["end"] + extra_end) * self.fps), total_frames)
