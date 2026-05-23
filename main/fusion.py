@@ -29,9 +29,8 @@ class PhonemeSignFusion(nn.Module):
         super().__init__()
         self.phoneme_proj = nn.Linear(phoneme_dim, embedding_dim)
         self.phoneme_norm = nn.LayerNorm(embedding_dim)
-        self.gate = nn.Linear(embedding_dim, embedding_dim)
-        # Bias toward sign stream so the gate doesn't flip catastrophically
-        nn.init.constant_(self.gate.bias, 2.0)
+        self.gate = nn.Linear(embedding_dim, 1)
+        nn.init.constant_(self.gate.bias, -2.0)
 
     def forward(self, sgn: Tensor, phonemes: Tensor) -> Tensor:
         """
@@ -41,5 +40,5 @@ class PhonemeSignFusion(nn.Module):
         """
         p = self.phoneme_proj(phonemes)
         p = self.phoneme_norm(p)
-        fg = torch.sigmoid(self.gate(sgn))
-        return fg * sgn + (1 - fg) * p
+        alpha = torch.sigmoid(self.gate(sgn))  # (B, T, 1)
+        return (1 - alpha) * sgn + alpha * p
