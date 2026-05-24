@@ -214,9 +214,12 @@ class SignTranslationDataset(Dataset):
 
         # --- Subsample if too long ---
         if sgn.shape[0] > self.max_sgn_len:
-            indices = np.sort(
-                rng.choice(sgn.shape[0], size=self.max_sgn_len, replace=False)
-            )
+            if is_train:
+                indices = np.sort(
+                    rng.choice(sgn.shape[0], size=self.max_sgn_len, replace=False)
+                )
+            else:
+                indices = np.linspace(0, sgn.shape[0] - 1, self.max_sgn_len, dtype=int)
             sgn = sgn[indices]
 
         # --- Tokens ---
@@ -228,16 +231,15 @@ class SignTranslationDataset(Dataset):
         if len(tokens) > self.max_txt_len:
             tokens = tokens[: self.max_txt_len - 1] + [self.eos_id]
 
-        # --- Previous sentence visual context ---
+        # --- Previous sentence visual context (train only) ---
         prev_sgn = None
-        if s["prev_start"] is not None and self.context_prob > 0:
+        if is_train and s["prev_start"] is not None and self.context_prob > 0:
             gap = s["start"] - s["prev_end"]
             if gap <= self.context_gap_max:
-                include = (not is_train) or (rng.random() < self.context_prob)
+                include = rng.random() < self.context_prob
                 if include:
                     ctx_start = _sec_to_feat(s["prev_start"])
-                    # Clip to not overlap with current sentence
-                    ctx_end = _sec_to_feat(min(s["prev_end"], s["start"]))
+                    ctx_end = _sec_to_feat(s["start"])
                     ctx_start = max(0, min(N, ctx_start))
                     ctx_end = min(N, ctx_end)
                     if ctx_end > ctx_start:
@@ -259,7 +261,7 @@ class SignTranslationDataset(Dataset):
                         prev_sgn = ctx_X
 
         del X_ref
-        
+
         return {
             "sgn": sgn,
             "txt": tokens,
