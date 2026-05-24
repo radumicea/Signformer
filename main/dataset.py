@@ -60,10 +60,13 @@ class SignTranslationDataset(Dataset):
         if sgn.shape[0] == 0:
             sgn = np.zeros((1, features.shape[1]), dtype=np.float32)
 
+        del features
+
         # Load phoneme CTC logits from npz (per-segment)
-        npz = np.load(s["phoneme_path"])
+        npz = np.load(s["phoneme_path"], mmap_mode="r")
         seg_logits = npz[f"logits_{s['seg_idx']}"][:, :-1]  # (padded_T, 38) — drop bos/eos
         seg_end = int(npz["ends"][s["seg_idx"]])     # actual end frame
+        del npz
 
         # The logits are padded beyond seg_end (up to ~5s extra).
         # Use skip_start / extra_end to mirror the sign feature jitter.

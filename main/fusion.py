@@ -41,4 +41,4 @@ class PhonemeSignFusion(nn.Module):
         p = self.phoneme_proj(phonemes)
         p = self.phoneme_norm(p)
         alpha = torch.sigmoid(self.gate(sgn))  # (B, T, 1)
-        return (1 - alpha) * sgn + alpha * p
+        return sgn + alpha * p
