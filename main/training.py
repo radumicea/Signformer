@@ -284,6 +284,7 @@ class TrainManager:
         epoch_no = None
         for epoch_no in range(self.current_epoch, self.epochs):
             self.current_epoch = epoch_no
+            train_data.set_epoch(epoch_no)
             self.logger.info("EPOCH %d", epoch_no + 1)
 
             if self.scheduler is not None and self.scheduler_step_at == "epoch":
