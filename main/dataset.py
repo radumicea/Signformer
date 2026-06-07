@@ -157,6 +157,7 @@ class SignTranslationDataset(Dataset):
             T, ann_end_local, post_ext_len, boundary_fade_len, rng, is_train
         )
         sgn *= conf_ramp[:, np.newaxis]
+        phonemes *= conf_ramp[:, np.newaxis]
 
         # Subsample if longer than max_sgn_len
         if sgn.shape[0] > self.max_sgn_len:

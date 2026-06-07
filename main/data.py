@@ -15,7 +15,7 @@ from main.vocabulary import Vocabulary, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN
 
 
 def _find_file_triplets(data_path):
-    """Find all matching .npy / .phonemes.npy / .json file triplets recursively."""
+    """Find all matching .npy / .phonemes.npz / .json file triplets recursively."""
     json_files = sorted(
         glob.glob(os.path.join(data_path, "**", "*.json"), recursive=True)
     )
