@@ -148,13 +148,16 @@ class ConvModule(nn.Module):
         self.relu6 = torch.nn.ReLU6()
         self.dropout = nn.Dropout(p=dropout_p)
 
-    def forward(self, inputs: Tensor) -> Tensor:
+    def forward(self, inputs: Tensor, mask: Tensor = None) -> Tensor:
 
         x = self.layerNorm(inputs)
         x = x.transpose(1, 2)
 
         #modifiable
         x = self.point1(x)
+        if mask is not None:
+            # zero the padding: like the conv's own padding, it must not reach the valid frames
+            x = x.masked_fill(~mask, 0.0)
         x = self.dep1(x)
         x = self.point2(x)
         x = self.relu6(x)

@@ -530,6 +530,7 @@ class TransformerDecoder(Decoder):
         unroll_steps: int = None,
         hidden: Tensor = None,
         trg_mask: Tensor = None,
+        last_only: bool = False,
         **kwargs
     ):
         """
@@ -543,6 +544,7 @@ class TransformerDecoder(Decoder):
         :param hidden: unused
         :param trg_mask: to mask out target paddings
                          Note that a subsequent mask is applied here.
+        :param last_only: only output the last position (decoding needs no more)
         :param kwargs:
         :return:
         """
@@ -557,6 +559,8 @@ class TransformerDecoder(Decoder):
         for layer in self.layers:
             x = layer(x=x, memory=encoder_output, src_mask=src_mask, trg_mask=trg_mask)
 
+        if last_only:
+            x = x[:, -1:]
         x = self.layer_norm(x)
         output = self.output_layer(x)
 

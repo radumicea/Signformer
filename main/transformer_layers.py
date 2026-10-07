@@ -192,7 +192,7 @@ class CA_TransformerEncoderLayer(nn.Module):
 
     def forward(self, inputs: Tensor, mask: Tensor = None) -> Tensor:
         x_att = self.att(inputs, mask=mask)
-        x = self.convMod(x_att)
+        x = self.convMod(x_att, mask=mask)
         x = self.FF2(x)
         x = self.layerNORM(x)
         return x

@@ -760,11 +760,12 @@ class DeformableMultiHeadedAttention(nn.Module):
         elif self.query_type == "attention":
             q_len = q.shape[1]
             q_att_score = self.att_layer(q).reshape(-1, 1, q_len).repeat(1, q_len, 1)
-            q_att_mask = q.new_ones((q_len, q_len), dtype=torch.bool)
-            for i in range(q_len):
-                start = max(0, i - self.query_nb // 2)
-                end = min(q_len, i + self.query_nb // 2 + 1)
-                q_att_mask[i, start:end] = False
+            # each query aggregates its query_nb neighbours...
+            pos = torch.arange(q_len, device=q.device)
+            q_att_mask = (pos[None, :] - pos[:, None]).abs() > self.query_nb // 2
+            if mask is not None:
+                # ...that are not padding (itself always, so no row is empty)
+                q_att_mask = q_att_mask | (~mask & (pos[None, :] != pos[:, None]))
             q_att_score = q_att_score.masked_fill(q_att_mask, float("-inf"))
             q_att_score = self.softmax(q_att_score)
             # batch x query_len x query_len , batch x query_len x feautre_len --> batch x query_len x feature_len
@@ -793,11 +794,20 @@ class DeformableMultiHeadedAttention(nn.Module):
         )
         if mask is None:
             mask = torch.ones(k.size(0), 1, k.size(1), device=k.device, dtype=torch.bool)
-        sign_lens = mask.sum(-1).squeeze().float() - 1
+        # index of the last valid key of each sequence
+        last = (mask.sum(-1).squeeze(-1).float() - 1)[:, None, None, None]
         sampling_locations = reference_point + offsets + location_point
-        sampling_locations = sampling_locations % sign_lens[:, None, None, None]
+        # wrap into the valid keys [0, last)
+        sampling_locations = sampling_locations % last.clamp(min=1)
+        # the original code samples position x * W / (W - 1) - 0.5 of a batch padded to
+        # length W (align_corners=False); use the sequence's own length instead of W, so
+        # that it samples the same keys whatever the padding of its batch
+        index = sampling_locations * (last + 1) / last.clamp(min=1) - 0.5
         # batch x num_heads x query_len x num_keys
-        sampling_locations = sampling_locations / (key_len - 1) * 2 - 1
+        sampling_locations = (2 * index + 1) / key_len - 1
+        # padded keys and values are 0, like grid_sample's zero padding beyond a sequence
+        k = k.masked_fill(~mask.unsqueeze(-1), 0.0)
+        v = v.masked_fill(~mask.unsqueeze(-1), 0.0)
         y_location = sampling_locations.new_ones(sampling_locations.shape)
         # batch*num_heads x query_len x num_keys x 2
         sampling_locations = torch.stack([sampling_locations, y_location], -1).reshape(

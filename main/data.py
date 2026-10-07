@@ -1,107 +1,253 @@
 # coding: utf-8
 """
-Data module - loads and splits dataset, creates data loaders.
+Data module - finds the segments of each split, creates data loaders.
+
+RSL-News layout (local, or the same files in a Hugging Face dataset repo):
+
+    <data_path>/
+        manifests/<channel>_manifest.json
+            {"items": [{..., "split": "train" | "val" | "test", "segments": [{"index": i, ...}]}]}
+        dataset/<Channel>/<episode>/segment_<i>.json
+            [{"start": s, "end": s, "text_lower": ..., "tokens_lower": [...]}, ...]
+        dataset/<Channel>/<episode>/segment_<i>.<features>.npy
+            [num_windows, feature_size]
 """
-import glob
+import json
+import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from typing import Callable, Dict, List
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Sampler
 
 from main.dataset import SignTranslationDataset
-from main.vocabulary import Vocabulary, PAD_TOKEN, BOS_TOKEN, EOS_TOKEN
+from main.vocabulary import Vocabulary, BOS_TOKEN, EOS_TOKEN
+
+# manifest file -> channel directory in dataset/
+MANIFEST_CHANNELS = {
+    "digi24_manifest.json": "Digi24",
+    "prima_manifest.json": "PrimaTV",
+    "protv_manifest.json": "ProTV",
+}
 
 
-def _find_file_pairs(data_path):
-    """Find all matching .npy / .json file pairs recursively."""
-    json_files = sorted(
-        glob.glob(os.path.join(data_path, "**", "*.json"), recursive=True)
+def _episode_dir(item: dict) -> str:
+    """Same layout as the download scripts: <id> (PrimaTV) or <YYYY>/<MM>/<DD>."""
+    return item["id"] if "id" in item else item["date"].replace("-", "/")
+
+
+def _split_segments(data_path: str, split: str) -> List[str]:
+    """Segments (relative to dataset/, without extension) of the episodes in `split`."""
+    segments = []
+    for manifest, channel in MANIFEST_CHANNELS.items():
+        with open(os.path.join(data_path, "manifests", manifest), encoding="utf-8") as f:
+            items = json.load(f)["items"]
+        for item in items:
+            if item.get("split") == split:
+                episode = "{}/{}".format(channel, _episode_dir(item))
+                segments += [
+                    "{}/segment_{}".format(episode, s["index"]) for s in item["segments"]
+                ]
+    return segments
+
+
+def _download(repo_id: str, data_path: str, keep: Callable[[str], bool]) -> None:
+    """
+    Download the files of Hugging Face dataset `repo_id` for which `keep(path)`
+    holds into `data_path`. Files already downloaded are not fetched again.
+    """
+    from huggingface_hub import HfApi, hf_hub_download
+
+    api = HfApi()
+    revision = api.dataset_info(repo_id).sha
+    files = [
+        f
+        for f in api.list_repo_files(repo_id, repo_type="dataset", revision=revision)
+        if keep(f)
+    ]
+    fetch = partial(
+        hf_hub_download,
+        repo_id,
+        repo_type="dataset",
+        revision=revision,
+        local_dir=data_path,
     )
-    pairs = []
-    for json_path in json_files:
-        npy_path = json_path.replace(".json", ".npy")
-        if os.path.exists(npy_path):
-            pairs.append((npy_path, json_path))
-    return pairs
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(fetch, files))
 
 
-def load_data(data_cfg: dict):
+def load_data(
+    data_cfg: dict, splits: List[str]
+) -> (Dict[str, SignTranslationDataset], Vocabulary):
     """
-    Load vocabulary and create train/dev/test datasets.
+    Load the vocabulary and the datasets of the given splits ("train", "val",
+    "test"). With `hf_repo` set, only the files these splits need are
+    downloaded (once) into `data_path`.
 
-    File pairs are discovered, shuffled with a seed, and split 90/5/5.
+    Training sentences longer than `max_sgn_len` windows or `max_txt_len`
+    tokens are dropped, like in the original code.
+
+    :param data_cfg: configuration dictionary for data
+        ("data" part of configuration file)
+    :param splits: splits to load
+    :return: datasets by split, text vocabulary
     """
-    data_path = data_cfg["data_path"]
+    data_path = data_cfg.get("data_path", "../RSL-News")
+    hf_repo = data_cfg.get("hf_repo")
+    features = data_cfg.get("features", "bsl5k")
     vocab_file = data_cfg["vocab_file"]
-    fps = data_cfg.get("fps", 12.5)
-    max_sgn_len = data_cfg.get("max_sgn_len", 256)
-    max_txt_len = data_cfg.get("max_txt_len", 128)
-    split_seed = data_cfg.get("split_seed", 42)
+    if not os.path.isabs(vocab_file):
+        vocab_file = os.path.join(data_path, vocab_file)
 
-    vocab = Vocabulary(file=vocab_file)
-    bos_id = vocab.stoi[BOS_TOKEN]
-    eos_id = vocab.stoi[EOS_TOKEN]
+    if hf_repo:
+        vocab_in_repo = os.path.relpath(vocab_file, data_path)
+        _download(
+            hf_repo, data_path, lambda f: f.startswith("manifests/") or f == vocab_in_repo
+        )
 
-    # Find all file pairs
-    pairs = _find_file_pairs(data_path)
-    assert len(pairs) > 0, f"No file pairs found in {data_path}"
+    segments = {split: _split_segments(data_path, split) for split in splits}
 
-    # Shuffle and split 90/5/5
-    rng = np.random.default_rng(split_seed)
-    indices = rng.permutation(len(pairs))
-    n = len(pairs)
-    n_train = int(n * 0.9)
-    n_dev = int(n * 0.05)
+    def files(segment: str) -> (str, str):
+        path = os.path.join(data_path, "dataset", segment)
+        return path + ".json", "{}.{}.npy".format(path, features)
 
-    train_pairs = [pairs[i] for i in indices[:n_train]]
-    dev_pairs = [pairs[i] for i in indices[n_train : n_train + n_dev]]
-    test_pairs = [pairs[i] for i in indices[n_train + n_dev :]]
+    if hf_repo:
+        wanted = {
+            os.path.relpath(f, data_path)
+            for split in splits
+            for segment in segments[split]
+            for f in files(segment)
+        }
+        _download(hf_repo, data_path, wanted.__contains__)
 
-    train_data = SignTranslationDataset(
-        train_pairs, bos_id, eos_id, fps, max_sgn_len, max_txt_len, train=True
+    txt_vocab = Vocabulary(file=vocab_file)
+
+    datasets = {}
+    for split in splits:
+        datasets[split] = SignTranslationDataset(
+            segments=[(segment, *files(segment)) for segment in segments[split]],
+            bos_index=txt_vocab.stoi[BOS_TOKEN],
+            eos_index=txt_vocab.stoi[EOS_TOKEN],
+            fps=data_cfg.get("fps", 25),
+            window_size=data_cfg.get("window_size", 8),
+            window_stride=data_cfg.get("window_stride", 2),
+            max_sgn_len=data_cfg.get("max_sgn_len") if split == "train" else None,
+            max_txt_len=data_cfg.get("max_txt_len") if split == "train" else None,
+        )
+
+    return datasets, txt_vocab
+
+
+class BucketBatchSampler(Sampler):
+    """
+    Batches of sentences with similar numbers of windows, like the torchtext
+    BucketIterator of the original code. When shuffling, the data is shuffled
+    and cut into pools of `pool_size` batches; each pool is sorted by length
+    and split into batches, and the batches are shuffled. Without shuffling,
+    all data is sorted by length.
+
+    The order depends only on (seed, epoch), so a resumed run sees the same
+    batches as an uninterrupted one.
+    """
+
+    def __init__(
+        self,
+        lengths: np.ndarray,
+        batch_size: int,
+        shuffle: bool = False,
+        seed: int = 0,
+        pool_size: int = 100,
+    ):
+        self.lengths = lengths
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.pool_size = pool_size
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        indices = np.arange(len(self.lengths))
+        if self.shuffle:
+            rng = np.random.default_rng([self.seed, self.epoch])
+            indices = rng.permutation(indices)
+            pool = self.batch_size * self.pool_size
+            pools = [indices[i : i + pool] for i in range(0, len(indices), pool)]
+        else:
+            pools = [indices]
+
+        batches = []
+        for p in pools:
+            # longest first: when evaluating, the largest batch comes first, so
+            # running out of memory shows up at once
+            p = p[np.argsort(-self.lengths[p], kind="stable")]
+            batches += [p[i : i + self.batch_size] for i in range(0, len(p), self.batch_size)]
+        if self.shuffle:
+            batches = [batches[i] for i in rng.permutation(len(batches))]
+
+        for batch in batches:
+            yield batch.tolist()
+
+    def __len__(self) -> int:
+        n = len(self.lengths)
+        if not self.shuffle:
+            return math.ceil(n / self.batch_size)
+        pool = self.batch_size * self.pool_size
+        return (n // pool) * self.pool_size + math.ceil((n % pool) / self.batch_size)
+
+
+def collate_fn(samples, pad_index: int):
+    """Pad windows with zeros and tokens with <pad> to the longest in the batch."""
+    ids, sgn, txt = zip(*samples)
+    return (
+        torch.tensor(ids),
+        pad_sequence(sgn, batch_first=True),
+        torch.tensor([s.shape[0] for s in sgn]),
+        pad_sequence(txt, batch_first=True, padding_value=pad_index),
     )
-    dev_data = SignTranslationDataset(
-        dev_pairs, bos_id, eos_id, fps, max_sgn_len, max_txt_len, train=False
-    )
-    test_data = SignTranslationDataset(
-        test_pairs, bos_id, eos_id, fps, max_sgn_len, max_txt_len, train=False
-    )
-
-    return train_data, dev_data, test_data, vocab
 
 
-def _collate_fn(samples, pad_id, sgn_dim):
-    """Collate function for DataLoader - pads sgn and txt to batch max."""
-    sgn_list, txt_list = zip(*samples)
+def make_data_iter(
+    dataset: SignTranslationDataset,
+    batch_size: int,
+    pad_index: int,
+    train: bool = False,
+    shuffle: bool = False,
+    seed: int = 0,
+    num_workers: int = 0,
+    use_cuda: bool = False,
+) -> DataLoader:
+    """
+    Returns a data loader yielding (ids, sgn, sgn_lengths, txt) batches.
 
-    sgn_lengths = torch.tensor([s.shape[0] for s in sgn_list])
-    txt_lengths = torch.tensor([t.shape[0] for t in txt_list])
-
-    max_sgn = sgn_lengths.max().item()
-    max_txt = txt_lengths.max().item()
-    batch_size = len(samples)
-
-    sgn = torch.zeros(batch_size, max_sgn, sgn_dim)
-    txt = torch.full((batch_size, max_txt), pad_id, dtype=torch.long)
-
-    for i, (s, t) in enumerate(zip(sgn_list, txt_list)):
-        sgn[i, : s.shape[0]] = s
-        txt[i, : t.shape[0]] = t
-
-    return sgn, sgn_lengths, txt, txt_lengths
-
-
-def make_data_iter(dataset, batch_size, pad_id, sgn_dim, train=False, shuffle=False):
-    """Create a DataLoader for the dataset."""
+    :param dataset: dataset
+    :param batch_size: sentences per batch
+    :param pad_index: txt padding token index
+    :param train: whether it's training time, when turned off,
+        shuffling is disabled
+    :param shuffle: whether to shuffle the data before each epoch; call
+        `loader.batch_sampler.set_epoch(epoch)` before iterating
+    :param seed: seed of the shuffling
+    :param num_workers: data loading processes (reading a slice of a
+        memory-mapped file is cheap, a few are enough)
+    :param use_cuda: pin memory for faster transfers to the GPU
+    :return: data loader
+    """
     return DataLoader(
         dataset,
-        batch_size=batch_size,
-        shuffle=shuffle and train,
-        collate_fn=partial(_collate_fn, pad_id=pad_id, sgn_dim=sgn_dim),
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True,
-        drop_last=False,
+        batch_sampler=BucketBatchSampler(
+            dataset.sgn_lengths, batch_size, shuffle=train and shuffle, seed=seed
+        ),
+        collate_fn=partial(collate_fn, pad_index=pad_index),
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        persistent_workers=num_workers > 0,
+        # own generator: creating the loader does not consume the global RNG
+        generator=torch.Generator().manual_seed(seed),
     )

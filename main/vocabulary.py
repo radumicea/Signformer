@@ -45,9 +45,6 @@ class Vocabulary:
             sentence.append(s)
         return sentence
 
-    def arrays_to_sentences(self, arrays: np.ndarray, cut_at_eos=True) -> List[List[str]]:
-        return [self.array_to_sentence(a, cut_at_eos) for a in arrays]
-
     def decode(self, array: np.ndarray, cut_at_eos=True) -> str:
         pieces = self.array_to_sentence(array, cut_at_eos)
         if pieces and pieces[0] == BOS_TOKEN:

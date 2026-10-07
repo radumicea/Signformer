@@ -14,28 +14,29 @@
 🥳 Signformer is the least parametric model across all scoreboards, Signformer-Feather of 0.57 Million achieves TOP5
 
  
-## Dataset and Feature Files Preparation
-### Phoenix14T:
-    wget "http://cihancamgoz.com/files/cvpr2020/phoenix14t.pami0.train"
-    wget "http://cihancamgoz.com/files/cvpr2020/phoenix14t.pami0.dev"
-    wget "http://cihancamgoz.com/files/cvpr2020/phoenix14t.pami0.test"
+## Dataset: RSL-News
+Features are read from `data_path` (default `../RSL-News`), or downloaded there first from the
+Hugging Face dataset repo `hf_repo` (only the files of the splits being used):
 
-### Config
-    train: [PATH]/phoenix14t.pami0.train
-    dev: [PATH]/phoenix14t.pami0.dev
-    test: [PATH]/phoenix14t.pami0.test
+    RSL-News/
+        manifests/<channel>_manifest.json                     # episodes, each with "split": "train" | "val" | "test"
+        dataset/<Channel>/<episode>/segment_<i>.json          # sentences: start, end (seconds), text_lower, tokens_lower
+        dataset/<Channel>/<episode>/segment_<i>.bsl5k.npy     # feature windows of the segment
+        spm_unigram_lowercase_16k.vocab
+
+A sample is one sentence: the feature windows that lie entirely between its timestamps, i.e. the
+windows of the video cropped to the sentence (`window_size` 8, `window_stride` 2, `fps` 25), and its token ids.
 
 * Install required packages using the `requirements.txt` file.
     `pip install -r requirements.txt`
 
-* Remember after downloading sophiag, modify their __init__.py by removing the last:
-`from sophia.sophia import SophiaG`
-
 ## Usage
 ### Train
-  `python -m main train [CONFIG PATH]` 
+  `python -m main train [CONFIG PATH]`
+### Resume an interrupted training (from `model_dir/latest.ckpt`)
+  `python -m main train [CONFIG PATH] --resume`
 ### Test
-  `python -m main test [CONFIG PATH] --ckpt [CHECKPOINT PATH]` 
+  `python -m main test [CONFIG PATH] --ckpt [CHECKPOINT PATH]`
 
 ## BIBTEX
 ```bibtex

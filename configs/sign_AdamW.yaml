@@ -1,12 +1,16 @@
 name: sign_experiment
 data:
-    data_path: /home/radumicea/Projects/University/LinguSign/new_feb_stuff/dataset
-    vocab_file: /home/radumicea/Projects/University/LinguSign/new_feb_stuff/dataset/spm_unigram_lowercase_16k.vocab
+    data_path: ../RSL-News           # manifests/ + dataset/, see main/data.py
+    hf_repo: null                   # Hugging Face dataset repo: download the needed files into data_path
+    vocab_file: spm_unigram_lowercase_16k.vocab  # relative to data_path, or absolute
+    features: bsl5k                 # dataset/.../segment_<i>.<features>.npy
     feature_size: 1024
-    fps: 12.5
-    max_sgn_len: 256
-    max_txt_len: 128
-    split_seed: 42
+    fps: 25                         # frame rate the timestamps refer to
+    window_size: 8                  # frames per feature window
+    window_stride: 2                # frames between consecutive windows
+    max_sgn_len: 400                # longer training sentences (windows) are dropped (none in RSL-News)
+    max_txt_len: 128                # longer training sentences (tokens with <s>, </s>) are dropped
+    num_workers: 4
     multimodal: 0.0
 testing:
     translation_beam_sizes:
@@ -25,40 +29,37 @@ testing:
     - 0.8
     - 1.0
 training:
-    reset_best_ckpt: false
-    reset_scheduler: false
-    reset_optimizer: false
     random_seed: 42
     model_dir: "./sign_sample"
-    translation_loss_weight: 1.0
-    eval_metric: bleu
-    optimizer: adamw
-    learning_rate: 0.001
-    batch_size: 100
-    num_valid_log: 50
-    epochs: 1000
-    early_stopping_metric: eval_metric
-    translation_normalization: batch
-    eval_translation_beam_size: 4
-    eval_translation_beam_alpha: 0.6
-    overwrite: true
-    shuffle: true
+    overwrite: true                 # a new run deletes model_dir; --resume continues in it
     use_cuda: true
-    translation_max_output_length: 128
-    batch_multiplier: 1
-    logging_freq: 400
+    epochs: 100                     # cosine: the whole schedule, can't be extended by resuming
+    batch_size: 32                  # 64 runs out of memory on a 6 GB GPU
+    eval_batch_size: 32
+    batch_multiplier: 8             # gradient accumulation: one update every n batches (effective batch 256)
+    shuffle: true
+    validation_freq: 1              # validate every n epochs
+    logging_freq: 500               # log every n updates (~1,980 updates per epoch)
+    num_valid_log: 50
+    optimizer: adamw
+    learning_rate: 0.001            # peak
+    warmup_epochs: 1                # linear warmup, per update
     betas:
     - 0.95
     - 0.998
-    scheduling: plateau
-    learning_rate_min: 1.0e-06
-    weight_decay: 0.003
-    patience: 10
-    decrease_factor: 0.8
+    weight_decay: 0.01              # ~1 / (learning_rate * updates per epoch * 57): same 57-epoch AdamW timescale as the old runs
+    scheduling: cosine              # cosine | linear: per update after the warmup, down to learning_rate_min at the last update
+    patience: 10                    # plateau only: validations without improvement before decreasing the lr
+    decrease_factor: 0.8            # plateau only
+    learning_rate_min: 1.0e-06      # cosine: lr of the last update; plateau: training stops below it
     label_smoothing: 0.1
-    lr_s_dim_model : 256
-    warmup_step : 60000
-    K: 2
+    translation_loss_weight: 1.0
+    translation_normalization: batch
+    eval_metric: bleu
+    early_stopping_metric: eval_metric
+    eval_translation_beam_size: 1   # greedy validation; the final test searches beam sizes and alphas
+    eval_translation_beam_alpha: -1
+    translation_max_output_length: 128
 model:
     initializer: xavier
     bias_initializer: zeros

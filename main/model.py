@@ -15,13 +15,13 @@ from main.vocabulary import (
     BOS_TOKEN,
 )
 from main.batch import Batch
-from main.helpers import freeze_params
 from torch import Tensor
-from typing import Union
 
 
 class SignModel(nn.Module):
-    """Sign Language Translation Model"""
+    """
+    Base Model class
+    """
 
     def __init__(
         self,
@@ -31,6 +31,15 @@ class SignModel(nn.Module):
         txt_embed: Embeddings,
         txt_vocab: Vocabulary,
     ):
+        """
+        Create a new encoder-decoder model
+
+        :param encoder: encoder
+        :param decoder: decoder
+        :param sgn_embed: spatial feature frame embeddings
+        :param txt_embed: spoken language word embedding
+        :param txt_vocab: spoken language vocabulary
+        """
         super().__init__()
 
         self.encoder = encoder
@@ -52,7 +61,18 @@ class SignModel(nn.Module):
         sgn_lengths: Tensor,
         txt_input: Tensor,
         txt_mask: Tensor = None,
-    ):
+    ) -> (Tensor, Tensor, Tensor, Tensor):
+        """
+        First encodes the source sentence.
+        Then produces the target one word at a time.
+
+        :param sgn: source input
+        :param sgn_mask: source mask
+        :param sgn_lengths: length of source inputs
+        :param txt_input: target input
+        :param txt_mask: target mask
+        :return: decoder outputs
+        """
         encoder_output, encoder_hidden = self.encode(
             sgn=sgn, sgn_mask=sgn_mask, sgn_length=sgn_lengths
         )
@@ -122,6 +142,14 @@ class SignModel(nn.Module):
         translation_loss_function: nn.Module,
         translation_loss_weight: float,
     ) -> Tensor:
+        """
+        Compute non-normalized loss for a batch
+
+        :param batch: batch to compute loss for
+        :param translation_loss_function: Sign Language Translation Loss Function (XEntropy)
+        :param translation_loss_weight: Weight for translation loss
+        :return: translation_loss: sum of losses over non-pad elements in the batch
+        """
         decoder_outputs = self.forward(
             sgn=batch.sgn,
             sgn_mask=batch.sgn_mask,
@@ -144,6 +172,17 @@ class SignModel(nn.Module):
         translation_beam_alpha: float = -1,
         translation_max_output_length: int = 100,
     ) -> (np.array, np.array):
+        """
+        Get outputs and attentions scores for a given batch
+
+        :param batch: batch to generate hypotheses for
+        :param translation_beam_size: size of the beam for translation beam search
+            if 1 use greedy
+        :param translation_beam_alpha: alpha value for beam search
+        :param translation_max_output_length: maximum length of translation hypotheses
+        :return: stacked_output: hypotheses for batch,
+            stacked_attention_scores: attention scores for batch
+        """
         encoder_output, encoder_hidden = self.encode(
             sgn=batch.sgn, sgn_mask=batch.sgn_mask, sgn_length=batch.sgn_lengths
         )
@@ -177,6 +216,11 @@ class SignModel(nn.Module):
         return stacked_txt_output, stacked_attention_scores
 
     def __repr__(self) -> str:
+        """
+        String representation: a description of encoder, decoder and embeddings
+
+        :return: string representation
+        """
         return (
             "%s(\n"
             "\tencoder=%s,\n"
@@ -199,6 +243,15 @@ def build_model(
     txt_vocab: Vocabulary,
     multimodal: bool = False,
 ) -> SignModel:
+    """
+    Build and initialize the model according to the configuration.
+
+    :param cfg: dictionary configuration containing model specifications
+    :param sgn_dim: feature dimension of the sign frame representation
+    :param txt_vocab: spoken language word vocabulary
+    :param multimodal: split the features into image (1024) and skeletal (100) parts
+    :return: built and initialized model
+    """
     txt_padding_idx = txt_vocab.stoi[PAD_TOKEN]
 
     sgn_embed: SpatialEmbeddings = SpatialEmbeddings(
@@ -231,12 +284,13 @@ def build_model(
             emb_dropout=enc_emb_dropout,
         )
 
+    # build decoder and word embeddings
     txt_embed: Embeddings = Embeddings(
-            **cfg["decoder"]["embeddings"],
-            num_heads=cfg["decoder"]["num_heads"],
-            vocab_size=len(txt_vocab),
-            padding_idx=txt_padding_idx,
-        )
+        **cfg["decoder"]["embeddings"],
+        num_heads=cfg["decoder"]["num_heads"],
+        vocab_size=len(txt_vocab),
+        padding_idx=txt_padding_idx,
+    )
     dec_dropout = cfg["decoder"].get("dropout", 0.0)
     dec_emb_dropout = cfg["decoder"]["embeddings"].get("dropout", dec_dropout)
     if cfg["decoder"].get("type", "recurrent") == "transformer":
@@ -264,8 +318,10 @@ def build_model(
         txt_embed=txt_embed,
         txt_vocab=txt_vocab,
     )
+    # tie softmax layer with txt embeddings
     if cfg.get("tied_softmax", False):
         if txt_embed.lut.weight.shape == model.decoder.output_layer.weight.shape:
+            # (also) share txt embeddings and softmax layer:
             model.decoder.output_layer.weight = txt_embed.lut.weight
         else:
             raise ValueError(

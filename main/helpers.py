@@ -4,32 +4,36 @@ Collection of helper functions
 """
 
 import copy
-import glob
 import os
 import os.path
-import errno
 import shutil
 import random
 import logging
 from sys import platform
 from logging import Logger
-from typing import Callable, Optional
+from typing import Callable, Dict
 import numpy as np
 
 import torch
 from torch import nn, Tensor
+from torch.utils.data import Dataset
 import yaml
 from main.vocabulary import Vocabulary
 
 
-def make_model_dir(model_dir: str, overwrite: bool = False) -> str:
+def make_model_dir(model_dir: str, overwrite: bool = False, resume: bool = False) -> str:
     """
     Create a new directory for the model.
 
     :param model_dir: path to model directory
     :param overwrite: whether to overwrite an existing directory
+    :param resume: keep the existing directory to continue training in it
     :return: path to model directory
     """
+    if resume:
+        if not os.path.isfile(os.path.join(model_dir, "latest.ckpt")):
+            raise FileNotFoundError("Nothing to resume: no latest.ckpt in " + model_dir)
+        return model_dir
     if os.path.isdir(model_dir):
         if not overwrite:
             raise FileExistsError("Model directory exists and overwriting is disabled.")
@@ -61,7 +65,7 @@ def make_logger(model_dir: str, log_file: str = "train.log") -> Logger:
             sh.setFormatter(formatter)
             logging.getLogger("").addHandler(sh)
         logger.info("Hello! This is SL-CAT.")
-        return logger
+    return logger
 
 
 def log_cfg(cfg: dict, logger: Logger, prefix: str = "cfg"):
@@ -116,19 +120,28 @@ def set_seed(seed: int):
 
 
 def log_data_info(
-    train_data,
-    valid_data,
-    test_data,
+    data: Dict[str, Dataset],
     txt_vocab: Vocabulary,
     logging_function: Callable[[str], None],
 ):
-    logging_function(
-        "Data set sizes: \n\ttrain {:d},\n\tvalid {:d},\n\ttest {:d}".format(
-            len(train_data),
-            len(valid_data),
-            len(test_data) if test_data is not None else 0,
+    """
+    Log statistics of data and vocabulary.
+
+    :param data: datasets by split
+    :param txt_vocab: text vocabulary
+    :param logging_function: e.g. logger.info
+    """
+    for split, dataset in data.items():
+        logging_function(
+            "{:5s}: {:d} sentences from {:d} segments "
+            "({:d} segments without features, {:d} sentences dropped)".format(
+                split,
+                len(dataset),
+                len(dataset.segment_names),
+                dataset.num_missing,
+                dataset.num_dropped,
+            )
         )
-    )
     logging_function("Vocabulary size: {}".format(len(txt_vocab)))
 
 
@@ -142,21 +155,6 @@ def load_config(path="configs/default.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as ymlfile:
         cfg = yaml.safe_load(ymlfile)
     return cfg
-
-
-def get_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
-    """
-    Returns the latest checkpoint (by time) from the given directory.
-    If there is no checkpoint in this directory, returns None
-
-    :param ckpt_dir:
-    :return: latest checkpoint file
-    """
-    list_of_files = glob.glob("{}/*.ckpt".format(ckpt_dir))
-    latest_checkpoint = None
-    if list_of_files:
-        latest_checkpoint = max(list_of_files, key=os.path.getctime)
-    return latest_checkpoint
 
 
 def load_checkpoint(path: str, use_cuda: bool = True) -> dict:
@@ -216,13 +214,3 @@ def freeze_params(module: nn.Module):
     for _, p in module.named_parameters():
         p.requires_grad = False
 
-
-def symlink_update(target, link_name):
-    try:
-        os.symlink(target, link_name)
-    except FileExistsError as e:
-        if e.errno == errno.EEXIST:
-            os.remove(link_name)
-            os.symlink(target, link_name)
-        else:
-            raise e

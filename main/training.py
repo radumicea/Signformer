@@ -3,14 +3,14 @@ import torch
 
 torch.backends.cudnn.deterministic = True
 
-import argparse
-import random
+import math
 import numpy as np
 import os
+import random
 import shutil
 import time
 
-from main.model import build_model
+from main.model import build_model, SignModel
 from main.batch import Batch
 from main.helpers import (
     log_data_info,
@@ -20,53 +20,54 @@ from main.helpers import (
     make_model_dir,
     make_logger,
     set_seed,
-    symlink_update,
 )
-from main.model import SignModel
-from main.prediction import validate_on_data
+from main.prediction import validate_on_data, format_scores, write_outputs, test
 from main.loss import XentLoss
 from main.data import load_data, make_data_iter
 from main.builders import build_optimizer, build_scheduler, build_gradient_clipper
-from main.prediction import test
+from main.dataset import SignTranslationDataset
 from torch import Tensor
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from typing import List, Dict
+
 
 # pylint: disable=too-many-instance-attributes
 class TrainManager:
     """ Manages training loop, validations, learning rate scheduling
     and early stopping."""
 
-    def __init__(self, model: SignModel, config: dict) -> None:
+    def __init__(self, model: SignModel, config: dict, resume: bool = False) -> None:
+        """
+        Creates a new TrainManager for a model, specified as in configuration.
+
+        :param model: torch module defining the model
+        :param config: dictionary containing the training configurations
+        :param resume: continue the training in model_dir from latest.ckpt
+        """
         train_config = config["training"]
 
         # files for logging and storing
         self.model_dir = make_model_dir(
-            train_config["model_dir"], overwrite=train_config.get("overwrite", False)
+            train_config["model_dir"],
+            overwrite=train_config.get("overwrite", False),
+            resume=resume,
         )
         self.logger = make_logger(model_dir=self.model_dir)
         self.logging_freq = train_config.get("logging_freq", 100)
-        self.valid_report_file = "{}/validations.txt".format(self.model_dir)
-        self.tb_writer = SummaryWriter(log_dir=self.model_dir + "/tensorboard/")
-
-        # input
-        self.feature_size = (
-            sum(config["data"]["feature_size"])
-            if isinstance(config["data"]["feature_size"], list)
-            else config["data"]["feature_size"]
-        )
+        self.valid_report_file = os.path.join(self.model_dir, "validations.txt")
 
         # model
         self.model = model
         self.txt_pad_index = self.model.txt_pad_index
-        self.txt_bos_index = self.model.txt_bos_index
         self._log_parameters_list()
 
-        # Translation parameters
+        # translation
         self.label_smoothing = train_config.get("label_smoothing", 0.0)
         self.translation_loss_function = XentLoss(
             pad_index=self.txt_pad_index, smoothing=self.label_smoothing
         )
+        # validation loss and ppl without label smoothing
+        self.valid_loss_function = XentLoss(pad_index=self.txt_pad_index, smoothing=0.0)
         self.translation_normalization_mode = train_config.get(
             "translation_normalization", "batch"
         )
@@ -82,21 +83,27 @@ class TrainManager:
             "eval_translation_beam_alpha", -1
         )
         self.translation_max_output_length = train_config.get(
-            "translation_max_output_length", None
+            "translation_max_output_length", 100
         )
 
         # optimization
-        self.last_best_lr = train_config.get("learning_rate", -1)
+        self.learning_rate = train_config["learning_rate"]
         self.learning_rate_min = train_config.get("learning_rate_min", 1.0e-8)
         self.clip_grad_fun = build_gradient_clipper(config=train_config)
-
-        params = model.parameters()
         self.optimizer = build_optimizer(
-            config=train_config, parameters=params
+            config=train_config, parameters=model.parameters()
         )
+        # gradient accumulation: update every batch_multiplier batches
         self.batch_multiplier = train_config.get("batch_multiplier", 1)
+        # linear warmup from 0 to learning_rate, in epochs (can be fractional);
+        # the scheduler only takes over after it
+        self.warmup_epochs = train_config.get("warmup_epochs", 0)
+        # both set from the number of batches per epoch
+        self.warmup_steps = 0
+        self.total_steps = 0
 
         # validation & early stopping
+        self.validation_freq = train_config.get("validation_freq", 1)
         self.num_valid_log = train_config.get("num_valid_log", 5)
         self.eval_metric = train_config.get("eval_metric", "bleu")
         if self.eval_metric not in ["bleu", "chrf", "rouge"]:
@@ -107,13 +114,11 @@ class TrainManager:
             "early_stopping_metric", "eval_metric"
         )
 
+        # if we schedule after BLEU/chrf/rouge, we want to maximize it, else minimize
         if self.early_stopping_metric in ["ppl", "translation_loss"]:
             self.minimize_metric = True
         elif self.early_stopping_metric == "eval_metric":
-            if self.eval_metric in ["bleu", "chrf", "rouge"]:
-                self.minimize_metric = False
-            else:
-                self.minimize_metric = True
+            self.minimize_metric = False
         else:
             raise ValueError(
                 "Invalid setting for 'early_stopping_metric': {}".format(
@@ -122,458 +127,437 @@ class TrainManager:
             )
 
         # learning rate scheduling
-        self.scheduler, self.scheduler_step_at = build_scheduler(
-            config=train_config,
-            scheduler_mode="min" if self.minimize_metric else "max",
-            optimizer=self.optimizer,
-            hidden_size=config["model"]["encoder"]["hidden_size"],
-        )
+        self.scheduling = train_config["scheduling"]
+        if self.scheduling in ["cosine", "linear"]:
+            # set before every update, see _set_learning_rate
+            self.scheduler, self.scheduler_step_at = None, None
+        else:
+            self.scheduler, self.scheduler_step_at = build_scheduler(
+                config=train_config,
+                scheduler_mode="min" if self.minimize_metric else "max",
+                optimizer=self.optimizer,
+                hidden_size=config["model"]["encoder"]["hidden_size"],
+            )
 
         # data & batch handling
         self.shuffle = train_config.get("shuffle", True)
+        self.seed = train_config.get("random_seed", 42)
         self.epochs = train_config["epochs"]
         self.batch_size = train_config["batch_size"]
         self.eval_batch_size = train_config.get("eval_batch_size", self.batch_size)
+        self.num_workers = config["data"].get("num_workers", 4)
 
         self.use_cuda = train_config["use_cuda"]
         if self.use_cuda:
             self.model.cuda()
-            self.translation_loss_function.cuda()
 
         # initialize training statistics
-        self.steps = 0
+        self.epoch = 0  # completed epochs
+        self.steps = 0  # optimizer updates
+        # stop training if this flag is True by reaching learning rate minimum
         self.stop = False
         self.total_txt_tokens = 0
-        self.best_ckpt_iteration = 0
+        self.best_ckpt_epoch = 0
+        self.best_ckpt_steps = 0
+        # initial values for best scores
         self.best_ckpt_score = np.inf if self.minimize_metric else -np.inf
         self.best_all_ckpt_scores = {}
-        self.current_epoch = 0
-        self.is_best = (
-            lambda score: score < self.best_ckpt_score
-            if self.minimize_metric
-            else score > self.best_ckpt_score
+
+        if resume:
+            self._load_checkpoint(os.path.join(self.model_dir, "latest.ckpt"))
+            self.logger.info("Resuming after epoch %d, step %d.", self.epoch, self.steps)
+
+        # drop events logged after the checkpoint by an interrupted run
+        self.tb_writer = SummaryWriter(
+            log_dir=os.path.join(self.model_dir, "tensorboard"),
+            purge_step=self.steps if resume else None,
         )
 
-        # model parameters
-        if "load_model" in train_config.keys():
-            model_load_path = train_config["load_model"]
-            self.logger.info("Loading model from %s", model_load_path)
-            reset_best_ckpt = train_config.get("reset_best_ckpt", False)
-            reset_scheduler = train_config.get("reset_scheduler", False)
-            reset_optimizer = train_config.get("reset_optimizer", False)
-            self.init_from_checkpoint(
-                model_load_path,
-                reset_best_ckpt=reset_best_ckpt,
-                reset_scheduler=reset_scheduler,
-                reset_optimizer=reset_optimizer,
-            )
+    def is_best(self, score: float) -> bool:
+        if self.minimize_metric:
+            return score < self.best_ckpt_score
+        return score > self.best_ckpt_score
 
-    def _save_checkpoint(self, is_best: bool = False) -> None:
+    def _save_checkpoint(self, name: str) -> None:
+        """
+        Save the model's current parameters and the training state (counters,
+        best score, optimizer, scheduler and RNG states) to
+        `model_dir/name`, so that training can be resumed exactly.
+        """
         state = {
+            "epoch": self.epoch,
             "steps": self.steps,
-            "epoch": self.current_epoch,
             "total_txt_tokens": self.total_txt_tokens,
             "best_ckpt_score": self.best_ckpt_score,
             "best_all_ckpt_scores": self.best_all_ckpt_scores,
-            "best_ckpt_iteration": self.best_ckpt_iteration,
+            "best_ckpt_epoch": self.best_ckpt_epoch,
+            "best_ckpt_steps": self.best_ckpt_steps,
             "model_state": self.model.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.scheduler.state_dict()
             if self.scheduler is not None
             else None,
-            "torch_rng_state": torch.random.get_rng_state(),
-            "numpy_rng_state": np.random.get_state(),
-            "python_rng_state": random.getstate(),
-            "cuda_rng_state": torch.cuda.get_rng_state()
-            if self.use_cuda
-            else None,
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+                "cuda": torch.cuda.get_rng_state_all() if self.use_cuda else None,
+            },
         }
-        latest_path = os.path.join(self.model_dir, "latest.ckpt")
-        torch.save(state, latest_path)
-        if is_best:
-            best_path = os.path.join(self.model_dir, "best.ckpt")
-            torch.save(state, best_path)
-            self.logger.info("Saving new best checkpoint.")
+        path = os.path.join(self.model_dir, name)
+        # write to a temporary file first: an interruption can't corrupt the checkpoint
+        torch.save(state, path + ".tmp")
+        os.replace(path + ".tmp", path)
 
-    def init_from_checkpoint(
-        self,
-        path: str,
-        reset_best_ckpt: bool = False,
-        reset_scheduler: bool = False,
-        reset_optimizer: bool = False,
-    ) -> None:
+    def _load_checkpoint(self, path: str) -> None:
         """
-        Initialize the trainer from a given checkpoint file.
-
-        This checkpoint file contains not only model parameters, but also
-        scheduler and optimizer states, see `self._save_checkpoint`.
+        Restore the training state saved by `self._save_checkpoint`.
 
         :param path: path to checkpoint
-        :param reset_best_ckpt: reset tracking of the best checkpoint,
-                                use for domain adaptation with a new dev
-                                set or when using a new metric for fine-tuning.
-        :param reset_scheduler: reset the learning rate scheduler, and do not
-                                use the one stored in the checkpoint.
-        :param reset_optimizer: reset the optimizer, and do not use the one
-                                stored in the checkpoint.
         """
-        model_checkpoint = load_checkpoint(path=path, use_cuda=self.use_cuda)
+        checkpoint = load_checkpoint(path=path, use_cuda=self.use_cuda)
 
-        # restore model and optimizer parameters
-        self.model.load_state_dict(model_checkpoint["model_state"])
+        self.model.load_state_dict(checkpoint["model_state"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        if checkpoint["scheduler_state"] is not None and self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state"])
 
-        if not reset_optimizer:
-            self.optimizer.load_state_dict(model_checkpoint["optimizer_state"])
-        else:
-            self.logger.info("Reset optimizer.")
+        self.epoch = checkpoint["epoch"]
+        self.steps = checkpoint["steps"]
+        self.total_txt_tokens = checkpoint["total_txt_tokens"]
+        self.best_ckpt_score = checkpoint["best_ckpt_score"]
+        self.best_all_ckpt_scores = checkpoint["best_all_ckpt_scores"]
+        self.best_ckpt_epoch = checkpoint["best_ckpt_epoch"]
+        self.best_ckpt_steps = checkpoint["best_ckpt_steps"]
 
-        if not reset_scheduler:
-            if (
-                model_checkpoint["scheduler_state"] is not None
-                and self.scheduler is not None
-            ):
-                self.scheduler.load_state_dict(model_checkpoint["scheduler_state"])
-        else:
-            self.logger.info("Reset scheduler.")
+        rng_state = checkpoint["rng_state"]
+        random.setstate(rng_state["python"])
+        np.random.set_state(rng_state["numpy"])
+        torch.set_rng_state(rng_state["torch"].cpu())
+        if self.use_cuda and rng_state["cuda"] is not None:
+            torch.cuda.set_rng_state_all([s.cpu() for s in rng_state["cuda"]])
 
-        # restore counts
-        self.steps = model_checkpoint["steps"]
-        self.total_txt_tokens = model_checkpoint["total_txt_tokens"]
-        self.current_epoch = model_checkpoint.get("epoch", 0) + 1
+    def train_and_validate(
+        self, train_data: SignTranslationDataset, valid_data: SignTranslationDataset
+    ) -> None:
+        """
+        Train the model and validate it every `validation_freq` epochs.
 
-        if not reset_best_ckpt:
-            self.best_ckpt_score = model_checkpoint["best_ckpt_score"]
-            self.best_all_ckpt_scores = model_checkpoint["best_all_ckpt_scores"]
-            self.best_ckpt_iteration = model_checkpoint["best_ckpt_iteration"]
-        else:
-            self.logger.info("Reset tracking of the best checkpoint.")
-
-        # restore rng states for exact resumption
-        if "torch_rng_state" in model_checkpoint:
-            rng_state = model_checkpoint["torch_rng_state"]
-            if isinstance(rng_state, torch.Tensor):
-                rng_state = rng_state.cpu()
-            torch.random.set_rng_state(rng_state)
-        if "numpy_rng_state" in model_checkpoint:
-            np.random.set_state(model_checkpoint["numpy_rng_state"])
-        if "python_rng_state" in model_checkpoint:
-            random.setstate(model_checkpoint["python_rng_state"])
-        if (
-            "cuda_rng_state" in model_checkpoint
-            and model_checkpoint["cuda_rng_state"] is not None
-        ):
-            cuda_rng = model_checkpoint["cuda_rng_state"]
-            if isinstance(cuda_rng, torch.Tensor):
-                cuda_rng = cuda_rng.cpu()
-            torch.cuda.set_rng_state(cuda_rng)
-
-        # move parameters to cuda
-        if self.use_cuda:
-            self.model.cuda()
-
-    def train_and_validate(self, train_data, valid_data) -> None:
+        :param train_data: training data
+        :param valid_data: validation data
+        """
         train_iter = make_data_iter(
             train_data,
             batch_size=self.batch_size,
-            pad_id=self.txt_pad_index,
-            sgn_dim=self.feature_size,
+            pad_index=self.txt_pad_index,
             train=True,
             shuffle=self.shuffle,
+            seed=self.seed,
+            num_workers=self.num_workers,
+            use_cuda=self.use_cuda,
         )
-        epoch_no = None
-        for epoch_no in range(self.current_epoch, self.epochs):
-            self.current_epoch = epoch_no
-            self.logger.info("EPOCH %d", epoch_no + 1)
+        valid_iter = make_data_iter(
+            valid_data,
+            batch_size=self.eval_batch_size,
+            pad_index=self.txt_pad_index,
+            num_workers=self.num_workers,
+            use_cuda=self.use_cuda,
+        )
+        num_batches = len(train_iter)
+        updates_per_epoch = math.ceil(num_batches / self.batch_multiplier)
+        self.warmup_steps = round(self.warmup_epochs * updates_per_epoch)
+        self.total_steps = self.epochs * updates_per_epoch
+        # log the same validation sentences every time
+        valid_log_idx = np.sort(
+            np.random.default_rng(self.seed).permutation(len(valid_data))[
+                : self.num_valid_log
+            ]
+        )
 
-            if self.scheduler is not None and self.scheduler_step_at == "epoch":
-                self.scheduler.step(epoch=epoch_no)
+        for epoch_no in range(self.epoch, self.epochs):
+            self.logger.info("EPOCH %d", epoch_no + 1)
+            train_iter.batch_sampler.set_epoch(epoch_no)
 
             self.model.train()
             start = time.time()
-            count = self.batch_multiplier - 1
-
             processed_txt_tokens = self.total_txt_tokens
             epoch_translation_loss = 0
 
-            for sgn, sgn_lengths, txt, txt_lengths in train_iter:
+            for i, (_, sgn, sgn_lengths, txt) in enumerate(train_iter):
                 batch = Batch(
-                    sgn, sgn_lengths, txt, txt_lengths,
+                    sgn, sgn_lengths, txt,
                     txt_pad_index=self.txt_pad_index,
-                    sgn_dim=self.feature_size,
                     use_cuda=self.use_cuda,
                 )
 
-                update = count == 0
+                # only update every batch_multiplier batches, and at the end
+                # of the epoch, so that epochs are independent of each other
+                update = (i + 1) % self.batch_multiplier == 0 or i + 1 == num_batches
 
                 translation_loss = self._train_batch(batch, update=update)
-
-                self.tb_writer.add_scalar(
-                    "train/train_translation_loss", translation_loss, self.steps
-                )
-                epoch_translation_loss += translation_loss.detach().cpu().numpy()
-
-                count = self.batch_multiplier if update else count
-                count -= 1
-
-                if (
-                    self.scheduler is not None
-                    and self.scheduler_step_at == "step"
-                    and update
-                ):
-                    self.scheduler.step()
+                epoch_translation_loss += translation_loss
 
                 # log learning progress
-                if self.steps % self.logging_freq == 0 and update:
+                if update and self.steps % self.logging_freq == 0:
                     elapsed = time.time() - start
-
-                    log_out = "[Epoch: {:03d} Step: {:08d}] ".format(
-                        epoch_no + 1, self.steps,
+                    elapsed_txt_tokens = self.total_txt_tokens - processed_txt_tokens
+                    lr = self.optimizer.param_groups[0]["lr"]
+                    self.logger.info(
+                        "[Epoch: %03d Step: %08d] Batch Translation Loss: %10.6f => "
+                        "Txt Tokens per Sec: %8.0f || Lr: %.6f",
+                        epoch_no + 1,
+                        self.steps,
+                        translation_loss,
+                        elapsed_txt_tokens / elapsed,
+                        lr,
                     )
-
-                    elapsed_txt_tokens = (
-                        self.total_txt_tokens - processed_txt_tokens
+                    self.tb_writer.add_scalar(
+                        "train/train_translation_loss", translation_loss, self.steps
                     )
-                    processed_txt_tokens = self.total_txt_tokens
-                    log_out += "Batch Translation Loss: {:10.6f} => ".format(
-                        translation_loss
-                    )
-                    log_out += "Txt Tokens per Sec: {:8.0f} || ".format(
-                        elapsed_txt_tokens / elapsed
-                    )
-                    log_out += "Lr: {:.6f}".format(self.optimizer.param_groups[0]["lr"])
-                    self.logger.info(log_out)
+                    self.tb_writer.add_scalar("learning_rate", lr, self.steps)
                     start = time.time()
+                    processed_txt_tokens = self.total_txt_tokens
 
+            self.epoch = epoch_no + 1
             self.logger.info(
                 "Epoch %3d: Total Training Translation Loss %.2f",
-                epoch_no + 1,
+                self.epoch,
                 epoch_translation_loss,
             )
 
-            # validate on the entire dev set at end of epoch
-            valid_start_time = time.time()
-            val_res = validate_on_data(
-                model=self.model,
-                data=valid_data,
-                batch_size=self.eval_batch_size,
-                use_cuda=self.use_cuda,
-                sgn_dim=self.feature_size,
-                txt_pad_index=self.txt_pad_index,
-                translation_loss_function=self.translation_loss_function,
-                translation_max_output_length=self.translation_max_output_length,
-                translation_loss_weight=self.translation_loss_weight,
-                translation_beam_size=self.eval_translation_beam_size,
-                translation_beam_alpha=self.eval_translation_beam_alpha,
-            )
-            self.model.train()
-            self.tb_writer.add_scalar(
-                "learning_rate",
-                self.scheduler.optimizer.param_groups[0]["lr"],
-                self.steps,
-            )
-            self.tb_writer.add_scalar(
-                "valid/valid_translation_loss",
-                val_res["valid_translation_loss"],
-                self.steps,
-            )
-            self.tb_writer.add_scalar(
-                "valid/valid_ppl", val_res["valid_ppl"], self.steps
-            )
-            self.tb_writer.add_scalar(
-                "valid/chrf", val_res["valid_scores"]["chrf"], self.steps
-            )
-            self.tb_writer.add_scalar(
-                "valid/rouge", val_res["valid_scores"]["rouge"], self.steps
-            )
-            self.tb_writer.add_scalar(
-                "valid/bleu", val_res["valid_scores"]["bleu"], self.steps
-            )
-            self.tb_writer.add_scalars(
-                "valid/bleu_scores",
-                val_res["valid_scores"]["bleu_scores"],
-                self.steps,
-            )
-
-            if self.early_stopping_metric == "translation_loss":
-                ckpt_score = val_res["valid_translation_loss"]
-            elif self.early_stopping_metric in ["ppl", "perplexity"]:
-                ckpt_score = val_res["valid_ppl"]
-            else:
-                ckpt_score = val_res["valid_scores"][self.eval_metric]
-
-            new_best = False
-            if self.is_best(ckpt_score):
-                self.best_ckpt_score = ckpt_score
-                self.best_all_ckpt_scores = val_res["valid_scores"]
-                self.best_ckpt_iteration = self.steps
-                self.logger.info(
-                    "Hooray! New best validation result [%s]!",
-                    self.early_stopping_metric,
-                )
-                new_best = True
-
-            self._save_checkpoint(is_best=new_best)
-
+            # the first epoch after the warmup still uses the full learning rate
             if (
                 self.scheduler is not None
-                and self.scheduler_step_at == "validation"
+                and self.scheduler_step_at == "epoch"
+                and self.steps > self.warmup_steps
             ):
-                prev_lr = self.scheduler.optimizer.param_groups[0]["lr"]
-                self.scheduler.step(ckpt_score)
-                now_lr = self.scheduler.optimizer.param_groups[0]["lr"]
+                self.scheduler.step()
 
-            # append to validation report
-            self._add_report(
-                valid_scores=val_res["valid_scores"],
-                valid_translation_loss=val_res["valid_translation_loss"],
-                valid_ppl=val_res["valid_ppl"],
-                eval_metric=self.eval_metric,
-                new_best=new_best,
-            )
-            valid_duration = time.time() - valid_start_time
-            self.logger.info(
-                "Validation result at epoch %3d, step %8d: duration: %.4fs\n\t"
-                "Translation Beam Size: %d\t"
-                "Translation Beam Alpha: %d\n\t"
-                "Translation Loss: %4.5f\t"
-                "PPL: %4.5f\n\t"
-                "Eval Metric: %s\n\t"
-                "BLEU-4 %.2f\t(BLEU-1: %.2f,\tBLEU-2: %.2f,\tBLEU-3: %.2f,\tBLEU-4: %.2f)\n\t"
-                "CHRF %.2f\t"
-                "ROUGE %.2f",
-                epoch_no + 1,
-                self.steps,
-                valid_duration,
-                self.eval_translation_beam_size,
-                self.eval_translation_beam_alpha,
-                val_res["valid_translation_loss"],
-                val_res["valid_ppl"],
-                self.eval_metric.upper(),
-                val_res["valid_scores"]["bleu"],
-                val_res["valid_scores"]["bleu_scores"]["bleu1"],
-                val_res["valid_scores"]["bleu_scores"]["bleu2"],
-                val_res["valid_scores"]["bleu_scores"]["bleu3"],
-                val_res["valid_scores"]["bleu_scores"]["bleu4"],
-                val_res["valid_scores"]["chrf"],
-                val_res["valid_scores"]["rouge"],
-            )
+            if self.epoch % self.validation_freq == 0 or self.epoch == self.epochs:
+                self._validate(valid_iter, valid_data, valid_log_idx)
 
-            self._log_examples(
-                txt_references=val_res["txt_ref"],
-                txt_hypotheses=val_res["txt_hyp"],
-            )
-
-            self._store_outputs(
-                "dev.hyp.txt", val_res["txt_hyp"], "txt"
-            )
-            self._store_outputs(
-                "references.dev.txt", val_res["txt_ref"]
-            )
+            self._save_checkpoint("latest.ckpt")
 
             if self.stop:
-                if (
-                    self.scheduler is not None
-                    and self.scheduler_step_at == "validation"
-                    and self.last_best_lr != prev_lr
-                ):
-                    self.logger.info(
-                        "Training ended since there were no improvements in"
-                        "the last learning rate step: %f",
-                        prev_lr,
-                    )
-                else:
-                    self.logger.info(
-                        "Training ended since minimum lr %f was reached.",
-                        self.learning_rate_min,
-                    )
+                self.logger.info(
+                    "Training ended since minimum lr %f was reached.",
+                    self.learning_rate_min,
+                )
                 break
-
         else:
-            self.logger.info("Training ended after %3d epochs.", epoch_no + 1)
+            self.logger.info("Training ended after %3d epochs.", self.epoch)
+
         self.logger.info(
-            "Best validation result at step %8d: %6.2f %s.",
-            self.best_ckpt_iteration,
+            "Best validation result at epoch %3d, step %8d: %6.2f %s.",
+            self.best_ckpt_epoch,
+            self.best_ckpt_steps,
             self.best_ckpt_score,
             self.early_stopping_metric,
         )
 
-        self.tb_writer.close()
+        self.tb_writer.close()  # close Tensorboard writer
 
     def _train_batch(self, batch: Batch, update: bool = True) -> Tensor:
+        """
+        Train the model on one batch: Compute the loss, make a gradient step.
+
+        :param batch: training batch
+        :param update: if False, only store gradient. if True also make update
+        :return: normalized translation loss (detached)
+        """
         translation_loss = self.model.get_loss_for_batch(
             batch=batch,
             translation_loss_function=self.translation_loss_function,
             translation_loss_weight=self.translation_loss_weight,
         )
 
+        # normalize translation loss
         if self.translation_normalization_mode == "batch":
             txt_normalization_factor = batch.num_seqs
-        elif self.translation_normalization_mode == "tokens":
-            txt_normalization_factor = batch.num_txt_tokens
         else:
-            raise NotImplementedError("Only normalize by 'batch' or 'tokens'")
+            txt_normalization_factor = batch.num_txt_tokens
 
+        # division needed since loss.backward sums the gradients until updated
         normalized_translation_loss = translation_loss / (
             txt_normalization_factor * self.batch_multiplier
         )
 
+        # compute gradients
         normalized_translation_loss.backward()
 
-        if self.clip_grad_fun is not None:
-            self.clip_grad_fun(params=self.model.parameters())
-
         if update:
+            if self.clip_grad_fun is not None:
+                # clip gradients (in-place)
+                self.clip_grad_fun(params=self.model.parameters())
+
+            self._set_learning_rate()
+
+            # make gradient step
             self.optimizer.step()
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
+
+            # increment step counter
             self.steps += 1
 
+            if (
+                self.scheduler is not None
+                and self.scheduler_step_at == "step"
+                and self.steps > self.warmup_steps
+            ):
+                self.scheduler.step()
+
+        # increment token counter
         self.total_txt_tokens += batch.num_txt_tokens
 
-        return normalized_translation_loss
+        return normalized_translation_loss.detach()
 
-    def _add_report(
-        self,
-        valid_scores: Dict,
-        valid_translation_loss: float,
-        valid_ppl: float,
-        eval_metric: str,
-        new_best: bool = False,
-    ) -> None:
-        current_lr = -1
+    def _set_learning_rate(self) -> None:
+        """
+        Set the learning rate of the next update: linear warmup to
+        learning_rate, then for "cosine" / "linear" a cosine / linear decay
+        that reaches learning_rate_min at the last update of the last epoch.
+        Other schedulers take over after the warmup.
+
+        It only depends on the number of updates, so resuming continues it exactly.
+        """
+        if self.steps < self.warmup_steps:
+            lr = self.learning_rate * (self.steps + 1) / self.warmup_steps
+        elif self.scheduling in ["cosine", "linear"]:
+            progress = min(
+                (self.steps - self.warmup_steps)
+                / max(self.total_steps - 1 - self.warmup_steps, 1),
+                1.0,
+            )
+            if self.scheduling == "cosine":
+                decay = 0.5 * (1 + math.cos(math.pi * progress))
+            else:
+                decay = 1 - progress
+            lr = self.learning_rate_min + (self.learning_rate - self.learning_rate_min) * decay
+        else:
+            return
         for param_group in self.optimizer.param_groups:
-            current_lr = param_group["lr"]
+            param_group["lr"] = lr
 
+    def _validate(
+        self,
+        valid_iter: DataLoader,
+        valid_data: SignTranslationDataset,
+        valid_log_idx: np.ndarray,
+    ) -> None:
+        """
+        Validate on the entire dev set: log and store the results, keep the
+        best checkpoint, step the plateau scheduler.
+        """
+        valid_start_time = time.time()
+        val_res = validate_on_data(
+            model=self.model,
+            data_iter=valid_iter,
+            use_cuda=self.use_cuda,
+            translation_loss_function=self.valid_loss_function,
+            translation_max_output_length=self.translation_max_output_length,
+            translation_beam_size=self.eval_translation_beam_size,
+            translation_beam_alpha=self.eval_translation_beam_alpha,
+        )
+        self.model.train()
+        valid_scores = val_res["valid_scores"]
+
+        if self.early_stopping_metric == "translation_loss":
+            ckpt_score = val_res["valid_translation_loss"]
+        elif self.early_stopping_metric == "ppl":
+            ckpt_score = val_res["valid_ppl"]
+        else:
+            ckpt_score = valid_scores[self.eval_metric]
+
+        new_best = self.is_best(ckpt_score)
         if new_best:
-            self.last_best_lr = current_lr
+            self.best_ckpt_score = ckpt_score
+            self.best_all_ckpt_scores = valid_scores
+            self.best_ckpt_epoch = self.epoch
+            self.best_ckpt_steps = self.steps
+            self.logger.info(
+                "Hooray! New best validation result [%s]!", self.early_stopping_metric
+            )
 
-        if current_lr < self.learning_rate_min:
+        after_warmup = self.steps >= self.warmup_steps
+        if (
+            self.scheduler is not None
+            and self.scheduler_step_at == "validation"
+            and after_warmup
+        ):
+            self.scheduler.step(ckpt_score)
+
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        if after_warmup and current_lr < self.learning_rate_min:
             self.stop = True
 
+        if new_best:
+            self.logger.info("Saving new best checkpoint.")
+            self._save_checkpoint("best.ckpt")
+
+        self.tb_writer.add_scalar(
+            "valid/valid_translation_loss", val_res["valid_translation_loss"], self.steps
+        )
+        self.tb_writer.add_scalar("valid/valid_ppl", val_res["valid_ppl"], self.steps)
+        self.tb_writer.add_scalar("valid/chrf", valid_scores["chrf"], self.steps)
+        self.tb_writer.add_scalar("valid/rouge", valid_scores["rouge"], self.steps)
+        self.tb_writer.add_scalar("valid/bleu", valid_scores["bleu"], self.steps)
+        self.tb_writer.add_scalars(
+            "valid/bleu_scores", valid_scores["bleu_scores"], self.steps
+        )
+
+        # append to validation report
         with open(self.valid_report_file, "a", encoding="utf-8") as opened_file:
             opened_file.write(
-                "Steps: {}\t"
-                "Translation Loss: {:.5f}\t"
-                "PPL: {:.5f}\t"
-                "Eval Metric: {}\t"
-                "BLEU-4 {:.2f}\t(BLEU-1: {:.2f},\tBLEU-2: {:.2f},\tBLEU-3: {:.2f},\tBLEU-4: {:.2f})\t"
-                "CHRF {:.2f}\t"
-                "ROUGE {:.2f}\t"
-                "LR: {:.8f}\t{}\n".format(
+                "Epoch: {}\tSteps: {}\tTranslation Loss: {:.5f}\tPPL: {:.5f}\t"
+                "Eval Metric: {}\t{}\tLR: {:.8f}\t{}\n".format(
+                    self.epoch,
                     self.steps,
-                    valid_translation_loss,
-                    valid_ppl,
-                    eval_metric,
-                    valid_scores["bleu"],
-                    valid_scores["bleu_scores"]["bleu1"],
-                    valid_scores["bleu_scores"]["bleu2"],
-                    valid_scores["bleu_scores"]["bleu3"],
-                    valid_scores["bleu_scores"]["bleu4"],
-                    valid_scores["chrf"],
-                    valid_scores["rouge"],
+                    val_res["valid_translation_loss"],
+                    val_res["valid_ppl"],
+                    self.eval_metric,
+                    format_scores(valid_scores),
                     current_lr,
                     "*" if new_best else "",
                 )
             )
+
+        self.logger.info(
+            "Validation result at epoch %3d, step %8d: duration: %.4fs\n\t"
+            "Translation Beam Size: %d\t"
+            "Translation Beam Alpha: %g\n\t"
+            "Translation Loss: %4.5f\t"
+            "PPL: %4.5f\n\t"
+            "Eval Metric: %s\n\t%s",
+            self.epoch,
+            self.steps,
+            time.time() - valid_start_time,
+            self.eval_translation_beam_size,
+            self.eval_translation_beam_alpha,
+            val_res["valid_translation_loss"],
+            val_res["valid_ppl"],
+            self.eval_metric.upper(),
+            format_scores(valid_scores),
+        )
+
+        # log some examples
+        names = valid_data.names
+        self.logger.info("Logging Translation Outputs")
+        self.logger.info("=" * 120)
+        for i in valid_log_idx:
+            self.logger.info("Logging Sequence: %s", names[i])
+            self.logger.info("\tReference : %s", val_res["txt_ref"][i])
+            self.logger.info("\tHypothesis: %s", val_res["txt_hyp"][i])
+            self.logger.info("=" * 120)
+
+        # store validation set outputs and references
+        txt_dir = os.path.join(self.model_dir, "txt")
+        os.makedirs(txt_dir, exist_ok=True)
+        write_outputs(
+            os.path.join(txt_dir, "{}.dev.hyp.txt".format(self.epoch)), names, val_res["txt_hyp"]
+        )
+        write_outputs(
+            os.path.join(self.model_dir, "references.dev.txt"), names, val_res["txt_ref"]
+        )
 
     def _log_parameters_list(self) -> None:
         """
@@ -588,91 +572,60 @@ class TrainManager:
         self.logger.info("Trainable parameters: %s", sorted(trainable_params))
         assert trainable_params
 
-    def _log_examples(
-        self,
-        txt_references: List[str],
-        txt_hypotheses: List[str],
-    ) -> None:
-        assert len(txt_references) == len(txt_hypotheses)
-        num_sequences = len(txt_hypotheses)
-        rand_idx = np.sort(np.random.permutation(num_sequences)[: self.num_valid_log])
-        self.logger.info("Logging Translation Outputs")
-        self.logger.info("=" * 120)
-        for ri in rand_idx:
-            self.logger.info("\tReference : %s", txt_references[ri])
-            self.logger.info("\tHypothesis: %s", txt_hypotheses[ri])
-            self.logger.info("=" * 120)
 
-    def _store_outputs(
-        self, tag: str, hypotheses: List[str], sub_folder=None
-    ) -> None:
-        if sub_folder:
-            out_folder = os.path.join(self.model_dir, sub_folder)
-            if not os.path.exists(out_folder):
-                os.makedirs(out_folder)
-            current_valid_output_file = "{}/{}.{}".format(out_folder, self.steps, tag)
-        else:
-            out_folder = self.model_dir
-            current_valid_output_file = "{}/{}".format(out_folder, tag)
+def train(cfg_file: str, resume: bool = False) -> None:
+    """
+    Main training function. After training, also test on test data if given.
 
-        with open(current_valid_output_file, "w", encoding="utf-8") as opened_file:
-            for i, hyp in enumerate(hypotheses):
-                opened_file.write("{}|{}\n".format(i, hyp))
-
-
-def train(cfg_file: str) -> None:
+    :param cfg_file: path to configuration yaml file
+    :param resume: continue the training in model_dir from latest.ckpt
+    """
     cfg = load_config(cfg_file)
+
+    # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
-    train_data, dev_data, test_data, txt_vocab = load_data(data_cfg=cfg["data"])
+    data, txt_vocab = load_data(data_cfg=cfg["data"], splits=["train", "val"])
+    for split, dataset in data.items():
+        if len(dataset) == 0:
+            raise ValueError(
+                "No {} sentences found: are there manifest items with "
+                "\"split\": \"{}\" and features for them?".format(split, split)
+            )
 
-    multimodal = cfg["data"].get("multimodal", False)
+    # build model and load parameters into it
     model = build_model(
         cfg=cfg["model"],
         txt_vocab=txt_vocab,
-        sgn_dim=sum(cfg["data"]["feature_size"])
-        if isinstance(cfg["data"]["feature_size"], list)
-        else cfg["data"]["feature_size"],
-        multimodal=multimodal,
+        sgn_dim=cfg["data"]["feature_size"],
+        multimodal=cfg["data"].get("multimodal", False),
     )
 
-    trainer = TrainManager(model=model, config=cfg)
-    shutil.copy2(cfg_file, trainer.model_dir + "/config.yaml")
+    # for training management, e.g. early stopping and model selection
+    trainer = TrainManager(model=model, config=cfg, resume=resume)
+
+    # store copy of the training config in model dir
+    shutil.copy2(cfg_file, os.path.join(trainer.model_dir, "config.yaml"))
+
+    # log all entries of config
     log_cfg(cfg, trainer.logger)
-    log_data_info(
-        train_data=train_data,
-        valid_data=dev_data,
-        test_data=test_data,
-        txt_vocab=txt_vocab,
-        logging_function=trainer.logger.info,
-    )
+
+    log_data_info(data=data, txt_vocab=txt_vocab, logging_function=trainer.logger.info)
+
     trainer.logger.info(str(model))
 
-    txt_vocab_file = "{}/txt.vocab".format(cfg["training"]["model_dir"])
-    txt_vocab.to_file(txt_vocab_file)
+    # store the vocab
+    txt_vocab.to_file(os.path.join(trainer.model_dir, "txt.vocab"))
 
-    trainer.train_and_validate(train_data=train_data, valid_data=dev_data)
-    del train_data, dev_data, test_data
+    # train the model
+    trainer.train_and_validate(train_data=data["train"], valid_data=data["val"])
+    # Delete to speed things up as we don't need training data anymore
+    del data
 
+    # predict with the best model on validation and test
     ckpt = os.path.join(trainer.model_dir, "best.ckpt")
-    output_name = "best.IT_{:08d}".format(trainer.best_ckpt_iteration)
+    output_name = "best.EP_{:04d}".format(trainer.best_ckpt_epoch)
     output_path = os.path.join(trainer.model_dir, output_name)
     logger = trainer.logger
     del trainer
     test(cfg_file, ckpt=ckpt, output_path=output_path, logger=logger)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser("Joey-NMT")
-    parser.add_argument(
-        "config",
-        default="configs/default.yaml",
-        type=str,
-        help="Training configuration file (yaml).",
-    )
-    parser.add_argument(
-        "--gpu_id", type=str, default="0", help="gpu to run your job on"
-    )
-    args = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    train(cfg_file=args.config)

@@ -176,6 +176,7 @@ def transformer_greedy(
                 unroll_steps=None,
                 hidden=None,
                 trg_mask=trg_mask,
+                last_only=True,
             )
 
             logits = logits[:, -1]
@@ -319,6 +320,7 @@ def beam_search(
             prev_att_vector=att_vectors,
             unroll_steps=1,
             trg_mask=trg_mask,  # subsequent mask for Transformer only
+            last_only=True,  # Transformer: only the last position is needed
         )
 
         # For the Transformer we made predictions for all time steps up to

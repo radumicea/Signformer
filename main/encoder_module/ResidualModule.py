@@ -1,6 +1,7 @@
 import torch.nn as nn
 from torch import Tensor
 from .MHSA_RPE import MultiHeadedSelfAttentionModule, ContextualMultiHeadedSelfAttentionModule, GlossFreeAttentionModule, MultiHeadedCrossAttentionModule, RelativeMultiheadSelfAttentionModule
+from .Convolution import ConvModule
 
 class ResidualConnectionModule(nn.Module):
     def __init__(self, module: nn.Module, module_factor: float = 1.0):
@@ -10,7 +11,7 @@ class ResidualConnectionModule(nn.Module):
         self.input_factor = 1.0
 
     def forward(self, inputs: Tensor, mask: Tensor = None) -> Tensor:
-        if isinstance(self.module, MultiHeadedSelfAttentionModule) or isinstance(self.module, RelativeMultiheadSelfAttentionModule) or isinstance(self.module, GlossFreeAttentionModule) or isinstance(self.module, ContextualMultiHeadedSelfAttentionModule):
+        if isinstance(self.module, MultiHeadedSelfAttentionModule) or isinstance(self.module, RelativeMultiheadSelfAttentionModule) or isinstance(self.module, GlossFreeAttentionModule) or isinstance(self.module, ContextualMultiHeadedSelfAttentionModule) or isinstance(self.module, ConvModule):
             return (self.module(inputs, mask=mask) * self.module_factor) + (inputs * self.input_factor)
         return (self.module(inputs) * self.module_factor) + (inputs * self.input_factor)
 

@@ -11,7 +11,15 @@ def main():
 
     ap.add_argument("config_path", type=str, help="path to YAML config file")
 
-    ap.add_argument("--ckpt", type=str, help="checkpoint for prediction")
+    ap.add_argument(
+        "--ckpt", type=str, help="checkpoint for prediction (default: <model_dir>/best.ckpt)"
+    )
+
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue training in <model_dir> from latest.ckpt",
+    )
 
     ap.add_argument(
         "--output_path", type=str, help="path for saving translation output"
@@ -22,7 +30,7 @@ def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
 
     if args.mode == "train":
-        train(cfg_file=args.config_path)
+        train(cfg_file=args.config_path, resume=args.resume)
     elif args.mode == "test":
         test(cfg_file=args.config_path, ckpt=args.ckpt, output_path=args.output_path)
     else:
