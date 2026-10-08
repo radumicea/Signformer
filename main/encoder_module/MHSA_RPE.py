@@ -81,12 +81,12 @@ class RelativeMultiheadSelfAttentionModule(nn.Module):
         return self.dropout(x)
 
 class GlossFreeAttentionModule(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, dropout_p: float = 0.1, cope=False, causal=False, max_pos_encoding=5000):
+    def __init__(self, d_model: int, num_heads: int, dropout_p: float = 0.1, cope=False, causal=False, max_pos_encoding=5000, query_nb: int = 7):
         super(GlossFreeAttentionModule, self).__init__()
         self.layer_norm = nn.LayerNorm(d_model)
         self.attention = DeformableMultiHeadedAttention(query_type='attention',
             size=d_model,
-            query_nb=7,
+            query_nb=query_nb,
             num_heads=num_heads,
             cope=cope)
         self.dropout = nn.Dropout(p=dropout_p)

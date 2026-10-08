@@ -173,6 +173,8 @@ class TransformerEncoder(Encoder):
         emb_dropout: float = 0.1,
         freeze: bool = False,
         cope=False,
+        conv_kernel_size: int = 31,
+        query_nb: int = 7,
         **kwargs
     ):
         """
@@ -185,6 +187,8 @@ class TransformerEncoder(Encoder):
         :param dropout: dropout probability for Transformer layers
         :param emb_dropout: Is applied to the input (word embeddings).
         :param freeze: freeze the parameters of the encoder during training
+        :param conv_kernel_size: kernel size of the convolution module (feature windows)
+        :param query_nb: number of neighbouring windows each attention query aggregates
         :param kwargs:
         """
         super(TransformerEncoder, self).__init__()
@@ -199,8 +203,10 @@ class TransformerEncoder(Encoder):
                     conv_expansion_factor=2,
                     attention_dropout_p=dropout,
                     conv_dropout_p=dropout,
+                    conv_kernel_size=conv_kernel_size,
                     half_step_residual= True,
-                    cope=cope
+                    cope=cope,
+                    query_nb=query_nb,
                 )
                 for _ in range(num_layers)
             ]

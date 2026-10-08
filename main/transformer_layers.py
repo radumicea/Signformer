@@ -158,6 +158,7 @@ class CA_TransformerEncoderLayer(nn.Module):
             conv_kernel_size: int = 31,
             half_step_residual: bool = True,
             cope = False,
+            query_nb: int = 7,
     ):
         super(CA_TransformerEncoderLayer, self).__init__()
         if half_step_residual:
@@ -172,6 +173,7 @@ class CA_TransformerEncoderLayer(nn.Module):
                 num_heads=num_attention_heads,
                 dropout_p=attention_dropout_p,
                 cope=cope,
+                query_nb=query_nb,
             ),
         )
         self.convMod = ResidualConnectionModule(

@@ -81,6 +81,8 @@ model:
         hidden_size: 256
         ff_size: 1024
         dropout: 0.1
+        conv_kernel_size: 15        # windows (1.2 s); the paper's 31 was for 25 frames/s, here 12.5 windows/s
+        query_nb: 3                 # neighbouring windows each attention query aggregates; the paper's 7
     decoder:
         type: transformer
         num_layers: 1
