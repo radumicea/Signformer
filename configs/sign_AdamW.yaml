@@ -1,8 +1,8 @@
 name: sign_experiment
 data:
-    data_path: ../RSL-News           # manifests/ + dataset/, see main/data.py
+    data_path: ../RSL-News           # manifests/, dataset/, tokenizer/: see main/data.py
     hf_repo: null                   # Hugging Face dataset repo: download the needed files into data_path
-    vocab_file: spm_unigram_lowercase_16k.vocab  # relative to data_path, or absolute
+    tokenizer: tokenizer/spm_unigram_lowercase_16k.model  # relative to data_path, or absolute
     features: bsl5k                 # dataset/.../segment_<i>.<features>.npy
     feature_size: 1024
     fps: 25                         # frame rate the timestamps refer to

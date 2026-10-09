@@ -15,19 +15,20 @@
 
  
 ## Dataset: RSL-News
-Features are read from `data_path` (default `../RSL-News`), or downloaded there first from the
-Hugging Face dataset repo `hf_repo` (only the files of the splits being used):
+The data is read with [rsl-news-loader](https://github.com/radumicea/rsl-news-loader), from `data_path` (default
+`../RSL-News`), or downloaded there first from the Hugging Face dataset repo `hf_repo` (only the
+files of the splits being used):
 
     RSL-News/
         manifests/<channel>_manifest.json                     # episodes, each with "split": "train" | "val" | "test"
-        dataset/<Channel>/<episode>/segment_<i>.json          # sentences: start, end (seconds), text_lower, tokens_lower
+        dataset/<Channel>/<episode>/segment_<i>.json          # sentences: start, end (seconds), text
         dataset/<Channel>/<episode>/segment_<i>.bsl5k.npy     # feature windows of the segment
-        spm_unigram_lowercase_16k.vocab
+        tokenizer/spm_unigram_lowercase_16k.model             # the text is lowercased, then tokenized
 
 A sample is one sentence: the feature windows that lie entirely between its timestamps, i.e. the
 windows of the video cropped to the sentence (`window_size` 8, `window_stride` 2, `fps` 25), and its token ids.
 
-* Install required packages using the `requirements.txt` file.
+* Install required packages using the `requirements.txt` file (it installs rsl-news-loader).
     `pip install -r requirements.txt`
 
 ## Usage

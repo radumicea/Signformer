@@ -1,83 +1,28 @@
 # coding: utf-8
 """
-Data module - finds the segments of each split, creates data loaders.
+Data module - RSL-News datasets of the splits, data loaders.
 
-RSL-News layout (local, or the same files in a Hugging Face dataset repo):
+The dataset is read with rsl-news-loader (the rsl_news package), from `data_path`, or downloaded
+there first from the Hugging Face dataset repo `hf_repo` (only the files the splits need):
 
     <data_path>/
-        manifests/<channel>_manifest.json
-            {"items": [{..., "split": "train" | "val" | "test", "segments": [{"index": i, ...}]}]}
-        dataset/<Channel>/<episode>/segment_<i>.json
-            [{"start": s, "end": s, "text_lower": ..., "tokens_lower": [...]}, ...]
-        dataset/<Channel>/<episode>/segment_<i>.<features>.npy
-            [num_windows, feature_size]
+        manifests/<channel>_manifest.json                       episodes, each with "split"
+        dataset/<Channel>/<episode>/segment_<i>.json            sentences: start, end (seconds), text
+        dataset/<Channel>/<episode>/segment_<i>.<features>.npy  [num_windows, feature_size]
+        tokenizer/spm_unigram_lowercase_16k.model               lowercases, then tokenizes
 """
-import json
 import math
-import os
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Callable, Dict, List
+from typing import Dict, List
 
 import numpy as np
 import torch
+from rsl_news import RSLNews, SentencePiece, Windows
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Sampler
 
 from main.dataset import SignTranslationDataset
 from main.vocabulary import Vocabulary, BOS_TOKEN, EOS_TOKEN
-
-# manifest file -> channel directory in dataset/
-MANIFEST_CHANNELS = {
-    "digi24_manifest.json": "Digi24",
-    "prima_manifest.json": "PrimaTV",
-    "protv_manifest.json": "ProTV",
-}
-
-
-def _episode_dir(item: dict) -> str:
-    """Same layout as the download scripts: <id> (PrimaTV) or <YYYY>/<MM>/<DD>."""
-    return item["id"] if "id" in item else item["date"].replace("-", "/")
-
-
-def _split_segments(data_path: str, split: str) -> List[str]:
-    """Segments (relative to dataset/, without extension) of the episodes in `split`."""
-    segments = []
-    for manifest, channel in MANIFEST_CHANNELS.items():
-        with open(os.path.join(data_path, "manifests", manifest), encoding="utf-8") as f:
-            items = json.load(f)["items"]
-        for item in items:
-            if item.get("split") == split:
-                episode = "{}/{}".format(channel, _episode_dir(item))
-                segments += [
-                    "{}/segment_{}".format(episode, s["index"]) for s in item["segments"]
-                ]
-    return segments
-
-
-def _download(repo_id: str, data_path: str, keep: Callable[[str], bool]) -> None:
-    """
-    Download the files of Hugging Face dataset `repo_id` for which `keep(path)`
-    holds into `data_path`. Files already downloaded are not fetched again.
-    """
-    from huggingface_hub import HfApi, hf_hub_download
-
-    api = HfApi()
-    revision = api.dataset_info(repo_id).sha
-    files = [
-        f
-        for f in api.list_repo_files(repo_id, repo_type="dataset", revision=revision)
-        if keep(f)
-    ]
-    fetch = partial(
-        hf_hub_download,
-        repo_id,
-        repo_type="dataset",
-        revision=revision,
-        local_dir=data_path,
-    )
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(fetch, files))
 
 
 def load_data(
@@ -96,45 +41,27 @@ def load_data(
     :param splits: splits to load
     :return: datasets by split, text vocabulary
     """
-    data_path = data_cfg.get("data_path", "../RSL-News")
-    hf_repo = data_cfg.get("hf_repo")
-    features = data_cfg.get("features", "bsl5k")
-    vocab_file = data_cfg["vocab_file"]
-    if not os.path.isabs(vocab_file):
-        vocab_file = os.path.join(data_path, vocab_file)
-
-    if hf_repo:
-        vocab_in_repo = os.path.relpath(vocab_file, data_path)
-        _download(
-            hf_repo, data_path, lambda f: f.startswith("manifests/") or f == vocab_in_repo
-        )
-
-    segments = {split: _split_segments(data_path, split) for split in splits}
-
-    def files(segment: str) -> (str, str):
-        path = os.path.join(data_path, "dataset", segment)
-        return path + ".json", "{}.{}.npy".format(path, features)
-
-    if hf_repo:
-        wanted = {
-            os.path.relpath(f, data_path)
-            for split in splits
-            for segment in segments[split]
-            for f in files(segment)
-        }
-        _download(hf_repo, data_path, wanted.__contains__)
-
-    txt_vocab = Vocabulary(file=vocab_file)
+    data = RSLNews(data_cfg.get("data_path", "../RSL-News"), hf_repo=data_cfg.get("hf_repo"))
+    tokenizer = SentencePiece(
+        data, data_cfg.get("tokenizer", "tokenizer/spm_unigram_lowercase_16k.model")
+    )
+    txt_vocab = Vocabulary(tokenizer.pieces)
+    features = Windows(
+        data_cfg.get("features", "bsl5k"),
+        size=data_cfg.get("window_size", 8),
+        stride=data_cfg.get("window_stride", 2),
+        fps=data_cfg.get("fps", 25),
+    )
 
     datasets = {}
     for split in splits:
         datasets[split] = SignTranslationDataset(
-            segments=[(segment, *files(segment)) for segment in segments[split]],
+            data,
+            split,
+            features,
+            tokenizer,
             bos_index=txt_vocab.stoi[BOS_TOKEN],
             eos_index=txt_vocab.stoi[EOS_TOKEN],
-            fps=data_cfg.get("fps", 25),
-            window_size=data_cfg.get("window_size", 8),
-            window_stride=data_cfg.get("window_stride", 2),
             max_sgn_len=data_cfg.get("max_sgn_len") if split == "train" else None,
             max_txt_len=data_cfg.get("max_txt_len") if split == "train" else None,
         )

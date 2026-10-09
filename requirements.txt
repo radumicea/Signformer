@@ -3,6 +3,7 @@ PyYAML>=6.0
 torch>=2.4
 tensorboard
 huggingface_hub  # only for data.hf_repo
+rsl-news-loader[hf,torch,sentencepiece] @ git+https://github.com/radumicea/rsl-news-loader@v1.0.0   # the dataset reader; or -e ../rsl-news-loader
 portalocker
 
 matplotlib

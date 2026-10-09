@@ -1,6 +1,6 @@
 # coding: utf-8
 """
-Vocabulary module - loads SPM vocabulary from file.
+Vocabulary module - the token strings of the SentencePiece model.
 """
 import numpy as np
 from typing import List
@@ -12,16 +12,11 @@ EOS_TOKEN = "</s>"
 
 
 class Vocabulary:
-    """Vocabulary from an SPM vocab file (token\\tscore per line)."""
+    """Token strings by id, e.g. the pieces of a SentencePiece model."""
 
-    def __init__(self, file: str):
-        self.itos = []
-        self.stoi = {}
-        with open(file, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                token = line.rstrip("\n").split("\t")[0]
-                self.itos.append(token)
-                self.stoi[token] = i
+    def __init__(self, pieces: List[str]):
+        self.itos = list(pieces)
+        self.stoi = {token: i for i, token in enumerate(self.itos)}
 
         assert self.stoi[UNK_TOKEN] == 0
         assert self.stoi[PAD_TOKEN] == 1
