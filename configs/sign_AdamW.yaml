@@ -3,14 +3,14 @@ data:
     data_path: ../RSL-News           # manifests/, dataset/, tokenizer/: see main/data.py
     hf_repo: null                   # Hugging Face dataset repo: download the needed files into data_path
     tokenizer: tokenizer/spm_unigram_lowercase_16k.model  # relative to data_path, or absolute
-    features: bsl5k                 # dataset/.../segment_<i>.<features>.npy
+    features: bsl5k                 # dataset/.../segment_<i>.<features>.npz
     feature_size: 1024
     fps: 25                         # frame rate the timestamps refer to
     window_size: 8                  # frames per feature window
     window_stride: 2                # frames between consecutive windows
     max_sgn_len: 400                # longer training sentences (windows) are dropped (none in RSL-News)
     max_txt_len: 128                # longer training sentences (tokens with <s>, </s>) are dropped
-    num_workers: 4
+    num_workers: 8
     multimodal: 0.0
 testing:
     translation_beam_sizes:
@@ -34,9 +34,9 @@ training:
     overwrite: true                 # a new run deletes model_dir; --resume continues in it
     use_cuda: true
     epochs: 100                     # cosine: the whole schedule, can't be extended by resuming
-    batch_size: 32                  # 64 runs out of memory on a 6 GB GPU
-    eval_batch_size: 32
-    batch_multiplier: 8             # gradient accumulation: one update every n batches (effective batch 256)
+    batch_size: 256                 # one batch of 256; on a 6 GB GPU: 32, with batch_multiplier 8
+    eval_batch_size: 256
+    batch_multiplier: 1             # gradient accumulation: one update every n batches (effective batch = batch_size x n)
     shuffle: true
     validation_freq: 1              # validate every n epochs
     logging_freq: 500               # log every n updates (~1,980 updates per epoch)

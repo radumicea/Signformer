@@ -22,7 +22,7 @@ files of the splits being used):
     RSL-News/
         manifests/<channel>_manifest.json                     # episodes, each with "split": "train" | "val" | "test"
         dataset/<Channel>/<episode>/segment_<i>.json          # sentences: start, end (seconds), text
-        dataset/<Channel>/<episode>/segment_<i>.bsl5k.npy     # feature windows of the segment
+        dataset/<Channel>/<episode>/segment_<i>.bsl5k.npz     # feature windows of the segment
         tokenizer/spm_unigram_lowercase_16k.model             # the text is lowercased, then tokenized
 
 A sample is one sentence: the feature windows that lie entirely between its timestamps, i.e. the

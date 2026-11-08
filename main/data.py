@@ -8,7 +8,7 @@ there first from the Hugging Face dataset repo `hf_repo` (only the files the spl
     <data_path>/
         manifests/<channel>_manifest.json                       episodes, each with "split"
         dataset/<Channel>/<episode>/segment_<i>.json            sentences: start, end (seconds), text
-        dataset/<Channel>/<episode>/segment_<i>.<features>.npy  [num_windows, feature_size]
+        dataset/<Channel>/<episode>/segment_<i>.<features>.npz  [num_windows, feature_size]
         tokenizer/spm_unigram_lowercase_16k.model               lowercases, then tokenizes
 """
 import math
