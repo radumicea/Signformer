@@ -17,7 +17,7 @@ from typing import Dict, List
 
 import numpy as np
 import torch
-from rsl_news import RSLNews, SentencePiece, Windows
+from rsl_news import Extend, RSLNews, SentencePiece, Windows
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Sampler
 
@@ -25,8 +25,21 @@ from main.dataset import SignTranslationDataset
 from main.vocabulary import Vocabulary, BOS_TOKEN, EOS_TOKEN
 
 
+def make_timing(timing_cfg):
+    """
+    The stretch of the segment a sample covers: None (the sentence's own timestamps) or
+    rsl_news.Extend from {before: ..., after: ...}. Each is seconds, or [low, high] for a uniform
+    draw per sample, again every epoch. `before` is subtracted from the start, so {before: -0.5}
+    starts 0.5 s after the sentence starts.
+    """
+    if not timing_cfg:
+        return None
+    amount = lambda v: tuple(float(x) for x in v) if isinstance(v, (list, tuple)) else float(v)
+    return Extend(before=amount(timing_cfg.get("before", 0.0)), after=amount(timing_cfg.get("after", 0.0)))
+
+
 def load_data(
-    data_cfg: dict, splits: List[str]
+    data_cfg: dict, splits: List[str], seed: int = 0
 ) -> (Dict[str, SignTranslationDataset], Vocabulary):
     """
     Load the vocabulary and the datasets of the given splits ("train", "val",
@@ -39,6 +52,7 @@ def load_data(
     :param data_cfg: configuration dictionary for data
         ("data" part of configuration file)
     :param splits: splits to load
+    :param seed: seed of the random time windows (data.train_timing, data.eval_timing)
     :return: datasets by split, text vocabulary
     """
     data = RSLNews(data_cfg.get("data_path", "../RSL-News"), hf_repo=data_cfg.get("hf_repo"))
@@ -64,6 +78,8 @@ def load_data(
             eos_index=txt_vocab.stoi[EOS_TOKEN],
             max_sgn_len=data_cfg.get("max_sgn_len") if split == "train" else None,
             max_txt_len=data_cfg.get("max_txt_len") if split == "train" else None,
+            timing=make_timing(data_cfg.get("train_timing" if split == "train" else "eval_timing")),
+            seed=seed,
         )
 
     return datasets, txt_vocab

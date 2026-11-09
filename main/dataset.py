@@ -30,6 +30,8 @@ class SignTranslationDataset(Sentences):
         eos_index: int,
         max_sgn_len: int = None,
         max_txt_len: int = None,
+        timing=None,
+        seed: int = 0,
     ):
         """
         :param data: the dataset (rsl_news.RSLNews)
@@ -40,6 +42,9 @@ class SignTranslationDataset(Sentences):
         :param eos_index: index of </s>, appended to every sentence
         :param max_sgn_len: drop sentences with more windows than this
         :param max_txt_len: drop sentences with more tokens (with <s> and </s>) than this
+        :param timing: the stretch of the segment a sample covers (rsl_news.Extend), None: the
+            sentence's own timestamps
+        :param seed: seed of random timings (drawn from seed, epoch and sentence; see set_epoch)
         """
 
         def keep(sentence, windows, tokens):
@@ -50,7 +55,7 @@ class SignTranslationDataset(Sentences):
                 and (max_txt_len is None or len(tokens) + 2 <= max_txt_len)
             )
 
-        super().__init__(data, split, features, tokenizer, keep=keep)
+        super().__init__(data, split, features, tokenizer, timing=timing, keep=keep, seed=seed)
         self.bos_index = bos_index
         self.eos_index = eos_index
         self.sgn_lengths = self.lengths

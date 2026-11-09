@@ -582,7 +582,9 @@ def train(cfg_file: str, resume: bool = False) -> None:
     # set the random seed
     set_seed(seed=cfg["training"].get("random_seed", 42))
 
-    data, txt_vocab = load_data(data_cfg=cfg["data"], splits=["train", "val"])
+    data, txt_vocab = load_data(
+        data_cfg=cfg["data"], splits=["train", "val"], seed=cfg["training"].get("random_seed", 42)
+    )
     for split, dataset in data.items():
         if len(dataset) == 0:
             raise ValueError(
