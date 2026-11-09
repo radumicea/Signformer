@@ -23,7 +23,7 @@ files of the splits being used):
         manifests/<channel>_manifest.json                     # episodes, each with "split": "train" | "val" | "test"
         dataset/<Channel>/<episode>/segment_<i>.json          # sentences: start, end (seconds), text
         dataset/<Channel>/<episode>/segment_<i>.bsl5k.npz     # feature windows of the segment
-        tokenizer/spm_unigram_lowercase_16k.model             # the text is lowercased, then tokenized
+        tokenizer/spm_unigram_cased_16k.model                 # the SentencePiece model of the cased text
 
 A sample is one sentence: the feature windows that lie entirely between its timestamps, i.e. the
 windows of the video cropped to the sentence (`window_size` 8, `window_stride` 2, `fps` 25), and its token ids.

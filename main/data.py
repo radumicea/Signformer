@@ -9,7 +9,7 @@ there first from the Hugging Face dataset repo `hf_repo` (only the files the spl
         manifests/<channel>_manifest.json                       episodes, each with "split"
         dataset/<Channel>/<episode>/segment_<i>.json            sentences: start, end (seconds), text
         dataset/<Channel>/<episode>/segment_<i>.<features>.npz  [num_windows, feature_size]
-        tokenizer/spm_unigram_lowercase_16k.model               lowercases, then tokenizes
+        tokenizer/spm_unigram_cased_16k.model                   the SentencePiece model (cased text)
 """
 import math
 from functools import partial
@@ -43,7 +43,7 @@ def load_data(
     """
     data = RSLNews(data_cfg.get("data_path", "../RSL-News"), hf_repo=data_cfg.get("hf_repo"))
     tokenizer = SentencePiece(
-        data, data_cfg.get("tokenizer", "tokenizer/spm_unigram_lowercase_16k.model")
+        data, data_cfg.get("tokenizer", "tokenizer/spm_unigram_cased_16k.model")
     )
     txt_vocab = Vocabulary(tokenizer.pieces)
     features = Windows(

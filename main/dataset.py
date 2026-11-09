@@ -54,7 +54,7 @@ class SignTranslationDataset(Sentences):
         self.bos_index = bos_index
         self.eos_index = eos_index
         self.sgn_lengths = self.lengths
-        self.references = [text.lower() for text in self.texts]
+        self.references = self.texts  # the text as released
         self.segment_names = [segment.name for segment in self.segments]
         self.feature_files = [str(data.path(features.files(s)[0])) for s in self.segments]
 
