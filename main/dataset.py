@@ -14,10 +14,9 @@ class SignTranslationDataset(Sentences):
 
     The features of a segment are stored as `[num_windows, feature_size]`,
     where window k covers the frames [k * stride, k * stride + size). A
-    sentence gets the windows that lie entirely between its start and end:
-    the windows of the video cropped to the sentence, up to the grid of the
-    feature file (less than `stride` frames). Segments without features are
-    skipped.
+    sentence gets the windows that lie entirely within its time window: by
+    default its start and end, or a window around them (`timing`). Segments
+    without features are skipped.
     """
 
     def __init__(
@@ -40,14 +39,25 @@ class SignTranslationDataset(Sentences):
         :param tokenizer: texts -> token ids
         :param bos_index: index of <s>, prepended to every sentence
         :param eos_index: index of </s>, appended to every sentence
-        :param max_sgn_len: drop sentences with more windows than this
+        :param max_sgn_len: drop sentences with more windows than this (between their own
+            timestamps, as every filter here: the same sentences are kept whatever the timing)
         :param max_txt_len: drop sentences with more tokens (with <s> and </s>) than this
         :param timing: the stretch of the segment a sample covers (rsl_news.Extend), None: the
             sentence's own timestamps
         :param seed: seed of random timings (drawn from seed, epoch and sentence; see set_epoch)
         """
 
+        lengths = {}
+
+        def own_windows(sentence):
+            segment = sentence.segment
+            if segment not in lengths:
+                lengths[segment] = features.length(data, segment)
+            first, stop = features.steps(data, segment, sentence.start, sentence.end, lengths[segment])
+            return stop - first
+
         def keep(sentence, windows, tokens):
+            windows = own_windows(sentence)
             return (
                 windows > 0
                 and len(tokens) > 0

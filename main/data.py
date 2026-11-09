@@ -46,8 +46,9 @@ def load_data(
     "test"). With `hf_repo` set, only the files these splits need are
     downloaded (once) into `data_path`.
 
-    Training sentences longer than `max_sgn_len` windows or `max_txt_len`
-    tokens are dropped, like in the original code.
+    Training sentences longer than `max_sgn_len` windows (between their own
+    timestamps, whatever the timing) or `max_txt_len` tokens are dropped, like in
+    the original code.
 
     :param data_cfg: configuration dictionary for data
         ("data" part of configuration file)
