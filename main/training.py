@@ -624,7 +624,10 @@ def train(cfg_file: str, resume: bool = False) -> None:
     # Delete to speed things up as we don't need training data anymore
     del data
 
-    # predict with the best model on validation and test
+    # predict with the best model on validation and test (testing.after_training: false leaves it
+    # to a separate evaluation)
+    if not cfg.get("testing", {}).get("after_training", True):
+        return
     ckpt = os.path.join(trainer.model_dir, "best.ckpt")
     output_name = "best.EP_{:04d}".format(trainer.best_ckpt_epoch)
     output_path = os.path.join(trainer.model_dir, output_name)
