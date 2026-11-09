@@ -4,7 +4,7 @@ torch>=2.4
 tensorboard
 huggingface_hub  # only for data.hf_repo
 sacrebleu>=2.4  # BLEU and chrF (main.metrics)
-rsl-news-loader[hf,torch,sentencepiece] @ git+https://github.com/radumicea/rsl-news-loader@v1.1.0   # the dataset reader; or -e ../rsl-news-loader
+rsl-news-loader[hf,torch,sentencepiece] @ git+https://github.com/radumicea/rsl-news-loader@v1.2.0   # the dataset reader; or -e ../rsl-news-loader
 portalocker
 
 matplotlib
