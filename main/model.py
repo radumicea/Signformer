@@ -171,6 +171,7 @@ class SignModel(nn.Module):
         translation_beam_size: int = 1,
         translation_beam_alpha: float = -1,
         translation_max_output_length: int = 100,
+        translation_eos_bias: float = 0.0,
     ) -> (np.array, np.array):
         """
         Get outputs and attentions scores for a given batch
@@ -180,6 +181,7 @@ class SignModel(nn.Module):
             if 1 use greedy
         :param translation_beam_alpha: alpha value for beam search
         :param translation_max_output_length: maximum length of translation hypotheses
+        :param translation_eos_bias: subtracted from the </s> logit when decoding (longer outputs)
         :return: stacked_output: hypotheses for batch,
             stacked_attention_scores: attention scores for batch
         """
@@ -197,6 +199,7 @@ class SignModel(nn.Module):
                 eos_index=self.txt_eos_index,
                 decoder=self.decoder,
                 max_output_length=translation_max_output_length,
+                eos_bias=translation_eos_bias,
             )
         else:
             stacked_txt_output, stacked_attention_scores = beam_search(
@@ -211,6 +214,7 @@ class SignModel(nn.Module):
                 pad_index=self.txt_pad_index,
                 bos_index=self.txt_bos_index,
                 decoder=self.decoder,
+                eos_bias=translation_eos_bias,
             )
 
         return stacked_txt_output, stacked_attention_scores

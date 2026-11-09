@@ -21,6 +21,7 @@ def greedy(
     decoder: Decoder,
     encoder_output: Tensor,
     encoder_hidden: Tensor,
+    eos_bias: float = 0.0,
 ) -> (np.array, np.array):
     """
     Greedy decoding. Select the token word highest probability at each time
@@ -35,6 +36,7 @@ def greedy(
     :param decoder: decoder to use for greedy decoding
     :param encoder_output: encoder hidden states for attention
     :param encoder_hidden: encoder last state for decoder initialization
+    :param eos_bias: subtracted from the </s> logit at every step (longer outputs)
     :return:
     """
 
@@ -54,6 +56,7 @@ def greedy(
         decoder=decoder,
         encoder_output=encoder_output,
         encoder_hidden=encoder_hidden,
+        eos_bias=eos_bias,
     )
 
 
@@ -66,6 +69,7 @@ def recurrent_greedy(
     decoder: Decoder,
     encoder_output: Tensor,
     encoder_hidden: Tensor,
+    eos_bias: float = 0.0,
 ) -> (np.array, np.array):
     """
     Greedy decoding: in each step, choose the word that gets highest score.
@@ -108,6 +112,8 @@ def recurrent_greedy(
         # logits: batch x time=1 x vocab (logits)
 
         # greedy decoding: choose arg max over vocabulary in each step
+        if eos_bias:
+            logits[..., eos_index] -= eos_bias
         next_word = torch.argmax(logits, dim=-1)  # batch x time=1
         output.append(next_word.squeeze(1).detach().cpu().numpy())
         prev_y = next_word
@@ -135,6 +141,7 @@ def transformer_greedy(
     decoder: Decoder,
     encoder_output: Tensor,
     encoder_hidden: Tensor,
+    eos_bias: float = 0.0,
 ) -> (np.array, None):
     """
     Special greedy function for transformer, since it works differently.
@@ -148,6 +155,7 @@ def transformer_greedy(
     :param decoder: decoder to use for greedy decoding
     :param encoder_output: encoder hidden states for attention
     :param encoder_hidden: encoder final state (unused in Transformer)
+    :param eos_bias: subtracted from the </s> logit at every step (longer outputs)
     :return:
         - stacked_output: output hypotheses (2d array of indices),
         - stacked_attention_scores: attention scores (3d array)
@@ -180,6 +188,8 @@ def transformer_greedy(
             )
 
             logits = logits[:, -1]
+            if eos_bias:
+                logits[:, eos_index] -= eos_bias
             _, next_word = torch.max(logits, dim=1)
             next_word = next_word.data
             ys = torch.cat([ys, next_word.unsqueeze(-1)], dim=1)
@@ -209,6 +219,7 @@ def beam_search(
     alpha: float,
     embed: Embeddings,
     n_best: int = 1,
+    eos_bias: float = 0.0,
 ) -> (np.array, np.array):
     """
     Beam search with size k.
@@ -228,6 +239,8 @@ def beam_search(
     :param alpha: `alpha` factor for length penalty
     :param embed:
     :param n_best: return this many hypotheses, <= beam (currently only 1)
+    :param eos_bias: subtracted from the </s> logit before log_softmax at every step
+        (longer outputs)
     :return:
         - stacked_output: output hypotheses (2d array of indices),
         - stacked_attention_scores: attention scores (3d array)
@@ -329,6 +342,8 @@ def beam_search(
             logits = logits[:, -1]  # keep only the last time step
             hidden = None  # we don't need to keep it for transformer
 
+        if eos_bias:
+            logits[..., eos_index] -= eos_bias
         # batch*k x trg_vocab
         log_probs = F.log_softmax(logits, dim=-1).squeeze(1)
 

@@ -42,6 +42,7 @@ def validate_on_data(
     translation_max_output_length: int,
     translation_beam_size: int = 1,
     translation_beam_alpha: float = -1,
+    translation_eos_bias: float = 0.0,
 ) -> dict:
     """
     Generate translations for the given data and compute the loss and scores.
@@ -55,6 +56,8 @@ def validate_on_data(
         If 1 then greedy decoding (default).
     :param translation_beam_alpha: beam search alpha for length penalty,
         disabled if set to -1 (default).
+    :param translation_eos_bias: subtracted from the </s> logit when decoding
+        (longer outputs; 0: none)
     :return: dict with
         - valid_scores: bleu, bleu_scores, chrf, rouge,
         - valid_translation_loss: summed over all tokens,
@@ -87,6 +90,7 @@ def validate_on_data(
                 translation_beam_size=translation_beam_size,
                 translation_beam_alpha=translation_beam_alpha,
                 translation_max_output_length=translation_max_output_length,
+                translation_eos_bias=translation_eos_bias,
             )
             # batches are sorted by length: put outputs back in dataset order
             for i, prediction in zip(ids.tolist(), batch_txt_predictions):
@@ -169,6 +173,8 @@ def test(
 
     translation_beam_sizes = cfg.get("testing", {}).get("translation_beam_sizes", [1])
     translation_beam_alphas = cfg.get("testing", {}).get("translation_beam_alphas", [-1])
+    # subtracted from the </s> logit when decoding dev and test (longer outputs)
+    translation_eos_bias = cfg.get("testing", {}).get("translation_eos_bias", 0.0)
     translation_loss_function = XentLoss(pad_index=model.txt_pad_index, smoothing=0.0)
 
     def make_iter(dataset):
@@ -189,6 +195,7 @@ def test(
             translation_max_output_length=translation_max_output_length,
             translation_beam_size=beam_size,
             translation_beam_alpha=beam_alpha,
+            translation_eos_bias=translation_eos_bias,
         )
 
     logger.info("=" * 60)
