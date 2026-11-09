@@ -61,6 +61,10 @@ class SignTranslationDataset(Sentences):
         self.sgn_lengths = self.lengths
         self.references = self.texts  # the text as released
         self.segment_names = [segment.name for segment in self.segments]
+        # windows drawn at random: they change with set_epoch, which must reach the loader's workers
+        self.random_timing = timing is not None and any(
+            isinstance(v, (tuple, list)) for v in (timing.before, timing.after)
+        )
         self.feature_files = [str(data.path(features.files(s)[0])) for s in self.segments]
 
     def __getitem__(self, idx: int):

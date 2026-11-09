@@ -255,6 +255,8 @@ class TrainManager:
             seed=self.seed,
             num_workers=self.num_workers,
             use_cuda=self.use_cuda,
+            # random windows: new workers each epoch, so that they see set_epoch
+            persistent=not train_data.random_timing,
         )
         valid_iter = make_data_iter(
             valid_data,
@@ -277,6 +279,7 @@ class TrainManager:
         for epoch_no in range(self.epoch, self.epochs):
             self.logger.info("EPOCH %d", epoch_no + 1)
             train_iter.batch_sampler.set_epoch(epoch_no)
+            train_data.set_epoch(epoch_no)  # the random windows of this epoch
 
             self.model.train()
             start = time.time()

@@ -165,6 +165,7 @@ def make_data_iter(
     seed: int = 0,
     num_workers: int = 0,
     use_cuda: bool = False,
+    persistent: bool = True,
 ) -> DataLoader:
     """
     Returns a data loader yielding (ids, sgn, sgn_lengths, txt) batches.
@@ -180,6 +181,8 @@ def make_data_iter(
     :param num_workers: data loading processes (reading a slice of a
         memory-mapped file is cheap, a few are enough)
     :param use_cuda: pin memory for faster transfers to the GPU
+    :param persistent: keep the workers between epochs; False for datasets drawing random
+        windows, whose workers must start each epoch with the dataset's current epoch
     :return: data loader
     """
     return DataLoader(
@@ -190,7 +193,7 @@ def make_data_iter(
         collate_fn=partial(collate_fn, pad_index=pad_index),
         num_workers=num_workers,
         pin_memory=use_cuda,
-        persistent_workers=num_workers > 0,
+        persistent_workers=num_workers > 0 and persistent,
         # own generator: creating the loader does not consume the global RNG
         generator=torch.Generator().manual_seed(seed),
     )
