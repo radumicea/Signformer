@@ -106,7 +106,7 @@ class TrainManager:
         self.validation_freq = train_config.get("validation_freq", 1)
         self.num_valid_log = train_config.get("num_valid_log", 5)
         self.eval_metric = train_config.get("eval_metric", "bleu")
-        if self.eval_metric not in ["bleu", "chrf", "rouge"]:
+        if self.eval_metric not in ["bleu", "chrf"]:
             raise ValueError(
                 "Invalid setting for 'eval_metric': {}".format(self.eval_metric)
             )
@@ -114,7 +114,7 @@ class TrainManager:
             "early_stopping_metric", "eval_metric"
         )
 
-        # if we schedule after BLEU/chrf/rouge, we want to maximize it, else minimize
+        # if we schedule after BLEU/chrF, we want to maximize it, else minimize
         if self.early_stopping_metric in ["ppl", "translation_loss"]:
             self.minimize_metric = True
         elif self.early_stopping_metric == "eval_metric":
@@ -499,11 +499,8 @@ class TrainManager:
         )
         self.tb_writer.add_scalar("valid/valid_ppl", val_res["valid_ppl"], self.steps)
         self.tb_writer.add_scalar("valid/chrf", valid_scores["chrf"], self.steps)
-        self.tb_writer.add_scalar("valid/rouge", valid_scores["rouge"], self.steps)
         self.tb_writer.add_scalar("valid/bleu", valid_scores["bleu"], self.steps)
-        self.tb_writer.add_scalars(
-            "valid/bleu_scores", valid_scores["bleu_scores"], self.steps
-        )
+        self.tb_writer.add_scalar("valid/len_ratio", valid_scores["len_ratio"], self.steps)
 
         # append to validation report
         with open(self.valid_report_file, "a", encoding="utf-8") as opened_file:

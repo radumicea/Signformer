@@ -11,25 +11,19 @@ from torch.utils.data import DataLoader
 
 from main.loss import XentLoss
 from main.helpers import load_config, load_checkpoint
-from main.metrics import bleu, chrf, rouge
+from main.metrics import scores
 from main.model import build_model, SignModel
 from main.batch import Batch
 from main.data import load_data, make_data_iter
 
 
 def format_scores(scores: dict) -> str:
-    """One-line summary of the scores returned by `validate_on_data`."""
-    return (
-        "BLEU-4 {:.2f}\t(BLEU-1: {:.2f},\tBLEU-2: {:.2f},\tBLEU-3: {:.2f},\tBLEU-4: {:.2f})\t"
-        "CHRF {:.2f}\tROUGE {:.2f}".format(
-            scores["bleu"],
-            scores["bleu_scores"]["bleu1"],
-            scores["bleu_scores"]["bleu2"],
-            scores["bleu_scores"]["bleu3"],
-            scores["bleu_scores"]["bleu4"],
-            scores["chrf"],
-            scores["rouge"],
-        )
+    """One-line summary of the scores returned by `validate_on_data` (main.metrics.scores)."""
+    return "BLEU-4 {:.2f}\t(n-gram precisions {})\tchrF {:.2f}\tlength ratio {:.3f}".format(
+        scores["bleu"],
+        "/".join("{:.1f}".format(p) for p in scores["bleu_precisions"]),
+        scores["chrf"],
+        scores["len_ratio"],
     )
 
 
@@ -59,7 +53,7 @@ def validate_on_data(
     :param translation_eos_bias: subtracted from the </s> logit when decoding
         (longer outputs; 0: none)
     :return: dict with
-        - valid_scores: bleu, bleu_scores, chrf, rouge,
+        - valid_scores: main.metrics.scores (sacreBLEU's BLEU and chrF),
         - valid_translation_loss: summed over all tokens,
         - valid_ppl: perplexity,
         - txt_ref / txt_hyp: references / hypotheses in dataset order
@@ -108,13 +102,7 @@ def validate_on_data(
     txt_ref = dataset.references
     assert len(txt_ref) == len(txt_hyp)
 
-    txt_bleu = bleu(references=txt_ref, hypotheses=txt_hyp)
-    valid_scores = {
-        "bleu": txt_bleu["bleu4"],
-        "bleu_scores": txt_bleu,
-        "chrf": chrf(references=txt_ref, hypotheses=txt_hyp),
-        "rouge": rouge(references=txt_ref, hypotheses=txt_hyp),
-    }
+    valid_scores = scores(references=txt_ref, hypotheses=txt_hyp)
 
     return {
         "valid_scores": valid_scores,
