@@ -104,6 +104,10 @@ class TrainManager:
 
         # validation & early stopping
         self.validation_freq = train_config.get("validation_freq", 1)
+        # up to epoch validation_sparse_until, validate only every validation_sparse_freq epochs: the best
+        # checkpoint comes later, and validating changes nothing in the training (it uses no randomness)
+        self.validation_sparse_until = train_config.get("validation_sparse_until", 0)
+        self.validation_sparse_freq = train_config.get("validation_sparse_freq", self.validation_freq)
         self.num_valid_log = train_config.get("num_valid_log", 5)
         self.eval_metric = train_config.get("eval_metric", "bleu")
         if self.eval_metric not in ["bleu", "chrf"]:
@@ -241,7 +245,8 @@ class TrainManager:
         self, train_data: SignTranslationDataset, valid_data: SignTranslationDataset
     ) -> None:
         """
-        Train the model and validate it every `validation_freq` epochs.
+        Train the model and validate it every `validation_freq` epochs (every `validation_sparse_freq`
+        epochs up to epoch `validation_sparse_until`).
 
         :param train_data: training data
         :param valid_data: validation data
@@ -336,7 +341,12 @@ class TrainManager:
             ):
                 self.scheduler.step()
 
-            if self.epoch % self.validation_freq == 0 or self.epoch == self.epochs:
+            freq = (
+                self.validation_sparse_freq
+                if self.epoch <= self.validation_sparse_until
+                else self.validation_freq
+            )
+            if self.epoch % freq == 0 or self.epoch == self.epochs:
                 self._validate(valid_iter, valid_data, valid_log_idx)
 
             self._save_checkpoint("latest.ckpt")
