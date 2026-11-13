@@ -31,6 +31,7 @@ class SignTranslationDataset(Sentences):
         max_txt_len: int = None,
         timing=None,
         seed: int = 0,
+        norm: dict = None,
     ):
         """
         :param data: the dataset (rsl_news.RSLNews)
@@ -45,6 +46,9 @@ class SignTranslationDataset(Sentences):
         :param timing: the stretch of the segment a sample covers (rsl_news.Extend), None: the
             sentence's own timestamps
         :param seed: seed of random timings (drawn from seed, epoch and sentence; see set_epoch)
+        :param norm: per-broadcast feature statistics ("keys": <Channel>/<broadcast>, "mean", "std",
+            "floor"): a sample's features become (x - mean) / max(std, floor) of its broadcast, over all
+            of the broadcast's video (labelled or not); None: the features as stored
         """
 
         lengths = {}
@@ -76,9 +80,17 @@ class SignTranslationDataset(Sentences):
             isinstance(v, (tuple, list)) for v in (timing.before, timing.after)
         )
         self.feature_files = [str(data.path(features.files(s)[0])) for s in self.segments]
+        self.norm = None
+        if norm is not None:
+            row = {k: i for i, k in enumerate(norm["keys"])}
+            self.norm_row = np.array([row[f"{s.channel}/{s.broadcast}"] for s in self.segments])
+            self.norm = (norm["mean"], np.maximum(norm["std"], norm["floor"]))
 
     def __getitem__(self, idx: int):
         sample = super().__getitem__(idx)
         sgn = sample["features"].astype(np.float32)
+        if self.norm is not None:
+            r = self.norm_row[self.segment[idx]]
+            sgn = (sgn - self.norm[0][r]) / self.norm[1][r]
         txt = np.concatenate(([self.bos_index], sample["tokens"], [self.eos_index])).astype(np.int64)
         return idx, torch.from_numpy(sgn), torch.from_numpy(txt)

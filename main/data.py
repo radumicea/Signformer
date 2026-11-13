@@ -68,6 +68,13 @@ def load_data(
         fps=data_cfg.get("fps", 25),
     )
 
+    # per-broadcast feature normalisation: (x - mean) / std of the sample's broadcast
+    norm = data_cfg.get("feature_norm")
+    if norm:
+        with np.load(norm) as z:
+            norm = {"keys": z["keys"], "mean": z["mean"], "std": z["std"],
+                    "floor": data_cfg.get("feature_norm_floor", 0.0)}
+
     datasets = {}
     for split in splits:
         datasets[split] = SignTranslationDataset(
@@ -81,6 +88,7 @@ def load_data(
             max_txt_len=data_cfg.get("max_txt_len") if split == "train" else None,
             timing=make_timing(data_cfg.get("train_timing" if split == "train" else "eval_timing")),
             seed=seed,
+            norm=norm,
         )
 
     return datasets, txt_vocab
