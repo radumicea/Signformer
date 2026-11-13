@@ -31,6 +31,10 @@ windows of the video cropped to the sentence (`window_size` 8, `window_stride` 2
 * Install required packages using the `requirements.txt` file (it installs rsl-news-loader).
     `pip install -r requirements.txt`
 
+## The RSL-News experiments
+`rsl-news/` reproduces every RSL-News baseline experiment, from the release to the results tables: see
+[rsl-news/README.md](rsl-news/README.md).
+
 ## Usage
 ### Train
   `python -m main train [CONFIG PATH]`

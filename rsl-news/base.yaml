@@ -1,0 +1,76 @@
+# The settings every RSL-News run shares. configs.py writes each run's config from this file and sets name,
+# data.data_path, data.train_timing, data.eval_timing, training.random_seed, training.model_dir, and for some runs
+# data.feature_norm and testing.window_grid.
+name: base
+data:
+    data_path: null                 # <out>/data-<variant>: manifests/, dataset/, tokenizer/ (splits.py)
+    hf_repo: null
+    tokenizer: tokenizer/spm_unigram_cased_16k.model  # the release's tokenizer, relative to data_path
+    features: bsl5k                 # dataset/.../segment_<i>.bsl5k.npz: I3D features, 1024-d, windows of 8 frames
+    feature_size: 1024
+    fps: 25
+    window_size: 8
+    window_stride: 2                # 12.5 windows per second
+    max_sgn_len: 400                # training sentences with more windows between their own timestamps are dropped
+    max_txt_len: 128                # training sentences with more tokens (with <s>, </s>) are dropped
+    num_workers: 7
+    train_timing: null              # the window each sentence covers, seconds: {before, after}; a list is a random range
+    eval_timing: null
+testing:
+    after_training: false           # evaluate.py evaluates
+training:
+    random_seed: 1
+    model_dir: null
+    overwrite: true                 # a new run deletes model_dir; --resume continues in it
+    use_cuda: true
+    epochs: 100
+    batch_size: 256
+    eval_batch_size: 256
+    batch_multiplier: 1
+    shuffle: true
+    validation_freq: 1
+    validation_sparse_until: 50     # up to epoch 50, validate every 5th epoch (the earliest best epoch was 55)
+    validation_sparse_freq: 5
+    logging_freq: 100
+    num_valid_log: 50
+    optimizer: adamw
+    learning_rate: 0.001
+    warmup_epochs: 1
+    betas: [0.95, 0.998]
+    weight_decay: 0.01
+    scheduling: cosine              # per update after the warmup, down to learning_rate_min at the last update
+    learning_rate_min: 1.0e-06
+    label_smoothing: 0.1
+    translation_loss_weight: 1.0
+    translation_normalization: batch
+    eval_metric: bleu               # sacreBLEU BLEU-4, greedy, on the full dev set: picks best.ckpt
+    early_stopping_metric: eval_metric
+    eval_translation_beam_size: 1
+    eval_translation_beam_alpha: -1
+    translation_max_output_length: 128
+model:
+    initializer: xavier
+    bias_initializer: zeros
+    init_gain: 1.0
+    embed_initializer: xavier
+    embed_init_gain: 1.0
+    tied_softmax: true
+    cope: false
+    encoder:
+        type: transformer
+        num_layers: 1
+        num_heads: 8
+        embeddings: {embedding_dim: 256, scale: false, dropout: 0.1, norm_type: batch, activation_type: softsign}
+        hidden_size: 256
+        ff_size: 1024
+        dropout: 0.1
+        conv_kernel_size: 15        # windows (1.2 s)
+        query_nb: 3
+    decoder:
+        type: transformer
+        num_layers: 1
+        num_heads: 8
+        embeddings: {embedding_dim: 256, scale: false, dropout: 0.1, norm_type: batch, activation_type: softsign}
+        hidden_size: 256
+        ff_size: 1024
+        dropout: 0.1
